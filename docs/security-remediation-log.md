@@ -16,7 +16,7 @@
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | pushed | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | `5b6296fa35b21fa82aa11a92668f1c4e7a605041` | pushed | 不保留历史结果列表，避免默认混淆 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | pushed | `tests/test_trace_terminal_state.py` | `app.py` | `413c6ba7932d2cb793738cd3f7ea072193e42539` | pushed | trace 文件本身安全属性由 SEC-12 处理 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | pushed | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | `2579ac203366d1826b2a83672645dac9b717403f` | pushed | UI 只使用默认脱敏模式 |
-| SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | fixed-locally | `tests/test_local_model_client.py` | `src/local_model_client.py` | pending | pending | 待推送 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -200,3 +200,18 @@
 - **修复后证明：** 权限、默认脱敏、目录 symlink 拒绝、12 个并发 run 独立完整 JSON、部分写故障不发布 final 且清理 temp 五条回归全部通过。
 - **文档与代码差异：** 审计称默认 0644；在受控 umask=000 下风险更严重为 0666，说明问题成立且影响上界更高。
 - **剩余风险：** `include_sensitive_content=True` 是仅供显式调用的高风险选项；UI 不启用它。安全目录遍历要求路径各组件不是 symlink，非 POSIX/缺少 `O_NOFOLLOW` 的平台会安全拒绝。
+
+## SEC-13 第一性原则记录
+
+- **资产：** 推理后端选择的确定性、不同 Streamlit 会话的配置隔离和操作员预设环境。
+- **不可信入口/状态：** 用户在 CPU 与 Apple Metal 间切换，以及同一进程中不同会话的构造顺序。
+- **信任边界：** 每次运行的 `AppConfig.n_gpu_layers` 进入进程级环境和 llama.cpp runtime 初始化。
+- **被破坏的不变量：** 构造轻量客户端不得改变进程环境；一个会话的 CPU 选择不能影响之后或并发的 Metal 运行。
+- **最小失败路径：** 操作员设置 `GGML_METAL_DEVICES=operator-selected-device`；先构造 CPU client，再构造 Metal client；环境永久变为 `none`。
+- **当前代码为何允许：** CPU 分支在客户端构造函数中直接赋值 `os.environ`，Metal 分支没有恢复，且没有生命周期或互斥边界。
+- **根本原因：** 已由 llama.cpp 参数表达的每-runtime 后端选择，被重复实现成不可逆的进程全局副作用。
+- **修复前失败测试：** CPU→Metal 顺序测试观测环境值 `none`，期望保留 `operator-selected-device`。
+- **最小根本修复：** 删除运行时环境写入；继续把 `n_gpu_layers=0` 直接传给 `Llama` 选择 CPU，Metal 使用配置值 `-1`。
+- **修复后证明：** 同一 CPU→Metal 构造序列保持操作员环境不变；完整本地客户端协议、并发和 runtime 生命周期测试共 12 项通过。
+- **文档与代码差异：** 无；审计描述的顺序依赖可稳定复现。
+- **验证限制：** 未加载真实 GGUF；参数传递路径离线可见，但 CPU/Metal 实际 layer offload 与性能仍需本机运行验证。

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import atexit
 import asyncio
-import os
 import re
 import threading
 import time
@@ -254,9 +253,6 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         *,
         runtime_registry: SingleModelRuntimeRegistry | None = None,
     ) -> None:
-        if config.n_gpu_layers == 0:
-            os.environ["GGML_METAL_DEVICES"] = "none"
-
         self._config = config
         self._runtime = (
             runtime_registry or _PROCESS_MODEL_REGISTRY

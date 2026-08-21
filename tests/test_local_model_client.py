@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -270,6 +272,32 @@ class SharedModelConcurrencyTests(unittest.TestCase):
         self.assertEqual(model.max_active, 1)
         self.assertEqual(client.total_usage().prompt_tokens, 2)
         self.assertEqual(client.total_usage().completion_tokens, 2)
+
+
+class BackendEnvironmentIsolationTests(unittest.TestCase):
+    def test_cpu_then_metal_clients_do_not_mutate_process_environment(self) -> None:
+        class StubRegistry:
+            def acquire(self, config: AppConfig) -> object:
+                return object()
+
+        registry = StubRegistry()
+        with patch.dict(
+            os.environ,
+            {"GGML_METAL_DEVICES": "operator-selected-device"},
+        ):
+            LlamaCppChatCompletionClient(  # type: ignore[arg-type]
+                AppConfig(model_path=Path("model.gguf"), n_gpu_layers=0),
+                runtime_registry=registry,
+            )
+            LlamaCppChatCompletionClient(  # type: ignore[arg-type]
+                AppConfig(model_path=Path("model.gguf"), n_gpu_layers=-1),
+                runtime_registry=registry,
+            )
+
+            self.assertEqual(
+                os.environ["GGML_METAL_DEVICES"],
+                "operator-selected-device",
+            )
 
 
 class SingleModelRuntimeRegistryTests(unittest.TestCase):
