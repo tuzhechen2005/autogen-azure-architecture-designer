@@ -19,7 +19,7 @@
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py` | `8218cdfd40a1c18d9e9e9f6c91a2a4593f86340f` | pushed | CPU/Metal 实际 offload 需真实 GGUF 验证 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | pushed | `tests/test_ui_safe_rendering.py`; `tests/test_ui_run_isolation.py` | `src/ui.py`; `app.py` | `ab8857ce083c1fc1b181dbbe517ab597fd5bd23d` | pushed | 页面级 CSP 由部署边界负责 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | pushed | `tests/test_dependency_lock.py`; clean venv `pytest` | `requirements.txt`; `requirements.lock`; `README.md`; `tests/test_local_model_client.py` | `d8d8a7aae77600ded915448872f4dc254027d0c1` | pushed | Xcode SDK/编译器不属于 Python 锁 |
-| SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | fixed-locally | `tests/test_release_archive.py`; final archive inspection | `scripts/build_release.py`; `README.md`; `DEVELOPMENT_ROADMAP.md` | pending | pending | 提交后生成最终 ZIP |
+| SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | pushed | `tests/test_release_archive.py`; final archive inspection | `scripts/build_release.py`; `README.md`; `DEVELOPMENT_ROADMAP.md` | `239199cdf415b266dbad2f721b03f0fde91a7361` | pushed | 台账提交后从最终 HEAD 生成 ZIP |
 
 ## SEC-01 第一性原则记录
 
