@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator, Mapping, Sequence
+import threading
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from autogen_core import CancellationToken
@@ -94,6 +97,107 @@ def _render_phi3_prompt(messages: Sequence[LLMMessage]) -> str:
     return "".join(parts)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelRuntimeIdentity:
+    """The settings that determine one native llama.cpp weight/context load."""
+
+    model_path: str
+    n_ctx: int
+    n_gpu_layers: int
+    seed: int
+
+    @classmethod
+    def from_config(cls, config: AppConfig) -> "ModelRuntimeIdentity":
+        return cls(
+            model_path=str(config.model_path.expanduser().resolve()),
+            n_ctx=config.n_ctx,
+            n_gpu_layers=config.n_gpu_layers,
+            seed=config.seed,
+        )
+
+
+class LlamaCppModelRuntime:
+    """One serialized, explicitly closable native llama.cpp model context."""
+
+    def __init__(self, config: AppConfig) -> None:
+        from llama_cpp import Llama
+
+        self.identity = ModelRuntimeIdentity.from_config(config)
+        self._lock = threading.RLock()
+        self._closed = False
+        self._model: Llama = Llama(
+            model_path=self.identity.model_path,
+            n_ctx=config.n_ctx,
+            n_gpu_layers=config.n_gpu_layers,
+            seed=config.seed,
+            verbose=False,
+        )
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise LocalModelProtocolError("Local model runtime is closed")
+
+    def generate(self, prompt: str, **kwargs: object) -> dict[str, object]:
+        with self._lock:
+            self._ensure_open()
+            self._model.reset()
+            return self._model(prompt, **kwargs)
+
+    def count_tokens(self, prompt: str) -> int:
+        with self._lock:
+            self._ensure_open()
+            return len(
+                self._model.tokenize(
+                    prompt.encode("utf-8"), add_bos=True, special=True
+                )
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._model.close()
+            self._closed = True
+
+
+RuntimeFactory = Callable[[AppConfig], LlamaCppModelRuntime]
+
+
+class SingleModelRuntimeRegistry:
+    """Own at most one process-wide model runtime and close it on replacement."""
+
+    def __init__(self, factory: RuntimeFactory = LlamaCppModelRuntime) -> None:
+        self._factory = factory
+        self._lock = threading.RLock()
+        self._identity: ModelRuntimeIdentity | None = None
+        self._runtime: LlamaCppModelRuntime | None = None
+
+    def acquire(self, config: AppConfig) -> LlamaCppModelRuntime:
+        identity = ModelRuntimeIdentity.from_config(config)
+        with self._lock:
+            if self._identity == identity and self._runtime is not None:
+                return self._runtime
+            if self._runtime is not None:
+                self._runtime.close()
+            self._identity = None
+            self._runtime = None
+            runtime = self._factory(config)
+            self._identity = identity
+            self._runtime = runtime
+            return runtime
+
+    def close(self) -> None:
+        with self._lock:
+            if self._runtime is not None:
+                self._runtime.close()
+            self._identity = None
+            self._runtime = None
+
+
+_PROCESS_MODEL_REGISTRY = SingleModelRuntimeRegistry()
+atexit.register(_PROCESS_MODEL_REGISTRY.close)
+
+
 class LlamaCppChatCompletionClient(ChatCompletionClient):
     """A deterministic text-only AutoGen client for local GGUF models.
 
@@ -102,20 +206,24 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
     reliable for Phi-3 Mini GGUF and keeps all inference in this Python process.
     """
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        runtime_registry: SingleModelRuntimeRegistry | None = None,
+    ) -> None:
         if config.n_gpu_layers == 0:
             os.environ["GGML_METAL_DEVICES"] = "none"
-        from llama_cpp import Llama
 
         self._config = config
-        self._model: Llama = Llama(
-            model_path=str(config.model_path),
-            n_ctx=config.n_ctx,
-            n_gpu_layers=config.n_gpu_layers,
-            seed=config.seed,
-            verbose=False,
+        self._runtime = (
+            runtime_registry or _PROCESS_MODEL_REGISTRY
+        ).acquire(config)
+        self._usage_lock = threading.Lock()
+        self._actual_usage = RequestUsage(
+            prompt_tokens=0,
+            completion_tokens=0,
         )
-        self._actual_usage = RequestUsage(prompt_tokens=0, completion_tokens=0)
         self._total_usage = RequestUsage(prompt_tokens=0, completion_tokens=0)
 
     @property
@@ -167,8 +275,7 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
                 f"Unsupported generation arguments: {sorted(unknown)}"
             )
 
-        self._model.reset()
-        response = self._model(
+        response = self._runtime.generate(
             prompt,
             max_tokens=int(extra_create_args.get("max_tokens", self._config.max_tokens)),
             temperature=float(
@@ -186,13 +293,14 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
             prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
             completion_tokens=int(raw_usage.get("completion_tokens", 0)),
         )
-        self._actual_usage = usage
-        self._total_usage = RequestUsage(
-            prompt_tokens=self._total_usage.prompt_tokens + usage.prompt_tokens,
-            completion_tokens=(
-                self._total_usage.completion_tokens + usage.completion_tokens
-            ),
-        )
+        with self._usage_lock:
+            self._actual_usage = usage
+            self._total_usage = RequestUsage(
+                prompt_tokens=self._total_usage.prompt_tokens + usage.prompt_tokens,
+                completion_tokens=(
+                    self._total_usage.completion_tokens + usage.completion_tokens
+                ),
+            )
         finish_reason = str(choice.get("finish_reason") or "unknown")
         if finish_reason not in {"stop", "length", "function_calls", "content_filter", "unknown"}:
             finish_reason = "unknown"
@@ -229,13 +337,17 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
 
     async def close(self) -> None:
-        self._model.close()
+        # The process registry owns the shared runtime. It closes the model when
+        # replacing its single slot and again idempotently at process shutdown.
+        return None
 
     def actual_usage(self) -> RequestUsage:
-        return self._actual_usage
+        with self._usage_lock:
+            return self._actual_usage
 
     def total_usage(self) -> RequestUsage:
-        return self._total_usage
+        with self._usage_lock:
+            return self._total_usage
 
     def count_tokens(
         self, messages: Sequence[LLMMessage], *, tools: Sequence[Any] = ()
@@ -243,11 +355,7 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         if tools:
             raise LocalModelProtocolError("Native tool calling is not supported")
         prompt = _render_phi3_prompt(messages)
-        return len(
-            self._model.tokenize(
-                prompt.encode("utf-8"), add_bos=True, special=True
-            )
-        )
+        return self._runtime.count_tokens(prompt)
 
     def remaining_tokens(
         self, messages: Sequence[LLMMessage], *, tools: Sequence[Any] = ()

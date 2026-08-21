@@ -7,7 +7,7 @@
 | SEC-01 | Phi-3 保留 token 可突破用户角色边界 | P1 | 用户输入不能改变消息角色边界 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `src/prompts.py` | `8df755621e83ada0ffa195123a921d3366e3ed97` | pushed | 普通自然语言注入的服从率需真实模型验证；协议边界已由代码拒绝 |
 | SEC-02 | 矛盾审查仍被标记为通过 | P1 | 任何未解决 finding 都不能 approved | pushed | `tests/test_schemas.py` | `src/schemas.py`; `src/prompts.py` | `6cfc4845440a5742b62ac8704932490fa4917f53` | pushed | 确定性架构完整性检查分别由后续问题处理 |
 | SEC-03 | JSON 扫描器接受非唯一、非完整顶层对象 | P1 | 歧义、截断和重复键输出不得静默接受 | pushed | `tests/test_output_parser.py`; `tests/test_local_model_client.py` | `src/output_parser.py`; `src/local_model_client.py` | `3fb200b7e48bdf9e8dc583afe448cae8bb75ba9d` | pushed | 未知 finish reason 的策略仍保守保留为 unknown |
-| SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | fixed-locally | `tests/test_local_model_client.py` | `src/local_model_client.py`; `app.py` | pending | pending | 真实 GGUF 峰值内存和原生并发行为需本地运行验证 |
 | SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -65,3 +65,18 @@
 - **修复后证明：** 目标测试 9 项通过；正常完整对象和完整 JSON 代码围栏仍被接受，原始漏洞及相邻包装路径均被拒绝。
 - **文档与代码差异：** 无；审计列出的三类解析绕过和 length 路径均可复现。
 - **剩余风险：** Schema 的严格类型与依赖图语义属于 SEC-05；本项不通过默认值或纠错掩盖模型输出。
+
+## SEC-04 第一性原则记录
+
+- **资产：** 本机内存、llama.cpp 可变 context、跨会话输出隔离和 usage 计数。
+- **不可信入口/故障：** 用户切换模型路径、上下文、CPU/Metal 或生成参数，以及多个会话同时推理。
+- **信任边界：** Streamlit 全局资源生命周期与每个会话/运行的生成调用之间。
+- **被破坏的不变量：** 进程最多保留一个模型 runtime；同一可变 context 最大并发必须为 1；被替换资源必须显式关闭。
+- **最小失败路径：** 两个线程同时调用共享客户端；修复前假模型记录到 `max_active=2`。改变 `max_tokens` 等缓存键还会创建新的全局模型对象。
+- **当前代码为何允许：** 无界 `st.cache_resource` 同时缓存权重和生成配置；共享 `_model` 的 reset、生成、分词与 usage 更新没有共同互斥锁或生命周期所有者。
+- **根本原因：** 把有状态、昂贵且需显式释放的原生 context 当作普通纯函数缓存值。
+- **修复前失败测试：** `SharedModelConcurrencyTests.test_serializes_calls_to_one_mutable_model_context` 稳定失败，观测值为 2、期望为 1。
+- **最小根本修复：** 用进程级单槽注册表拥有 runtime；缓存身份只含规范化路径、`n_ctx`、GPU 层数和 seed；生成参数留在每次运行的轻量客户端；runtime 锁覆盖 reset/生成/分词/close；替换前和进程退出时显式 close。
+- **修复后证明：** 双线程最大并发为 1 且 usage 完整；生成参数变化复用同一 runtime；身份变化按 close-old→load-new 顺序执行；close 幂等且关闭后调用安全失败。
+- **文档与代码差异：** 无；无锁并发和生成参数参与缓存键均可复现。
+- **验证限制：** 未加载真实 GGUF，尚未测量 3–5 个历史键的实际峰值内存，也未验证 llama.cpp 原生崩溃形态；代码级单槽和串行不变量已离线证明。

@@ -34,7 +34,6 @@ st.set_page_config(
 )
 
 
-@st.cache_resource(show_spinner=False)
 def load_local_model(
     model_path: str,
     n_ctx: int,
@@ -42,7 +41,7 @@ def load_local_model(
     temperature: float,
     n_gpu_layers: int,
 ) -> LlamaCppChatCompletionClient:
-    """Load one local model per stable configuration for Streamlit reruns."""
+    """Create a per-run client backed by the process's bounded model registry."""
 
     config = AppConfig(
         model_path=Path(model_path).expanduser(),
