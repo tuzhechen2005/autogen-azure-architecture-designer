@@ -18,7 +18,7 @@
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | pushed | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | `2579ac203366d1826b2a83672645dac9b717403f` | pushed | UI 只使用默认脱敏模式 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py` | `8218cdfd40a1c18d9e9e9f6c91a2a4593f86340f` | pushed | CPU/Metal 实际 offload 需真实 GGUF 验证 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | pushed | `tests/test_ui_safe_rendering.py`; `tests/test_ui_run_isolation.py` | `src/ui.py`; `app.py` | `ab8857ce083c1fc1b181dbbe517ab597fd5bd23d` | pushed | 页面级 CSP 由部署边界负责 |
-| SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | fixed-locally | `tests/test_dependency_lock.py`; clean venv `pytest` | `requirements.txt`; `requirements.lock`; `README.md`; `tests/test_local_model_client.py` | pending | pending | 待推送 |
 | SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | confirmed | pending | pending | pending | pending | 待处理 |
 
 ## SEC-01 第一性原则记录
@@ -230,3 +230,18 @@
 - **修复后证明：** bullet、标题、摘要、finding 三类路径均只把恶意 payload 传入纯文本 sink；异常 UI 也只在静态错误框外用 code 显示详情；相邻 run 身份和 trace 终态测试通过。
 - **文档与代码差异：** 无；审计点名的三个 sink 均可稳定复现。
 - **剩余风险：** `st.dataframe` 展示结构化资源字符串但不解释 Markdown；用户主动复制或访问文本中的 URL 不属于自动外部请求。Streamlit 页面级 CSP 仍由部署反向代理负责。
+
+## SEC-15 第一性原则记录
+
+- **资产：** 构建可重复性、测试可执行性、依赖供应链完整性和 llama.cpp Metal 后端一致性。
+- **不可信入口/变化：** 包索引随时间新增发行版、传递依赖解析、平台 wheel 选择、源码构建后端及 pip 版本变化。
+- **信任边界：** 五个直接依赖版本进入 pip resolver，随后下载并执行数十个第三方发行物及 llama.cpp 原生构建。
+- **被破坏的不变量：** 同一 Python/平台安装必须解析到相同版本且校验内容哈希；验收命令所需 pytest 必须由仓库声明。
+- **最小失败路径：** 在不同日期执行 `pip install -r requirements.txt`，numpy/protobuf/requests/tornado/pyarrow 等重新解析；当前 venv 执行 `python -m pytest` 直接报模块缺失。
+- **当前代码为何允许：** 直接依赖的 `==` 被误认为完整锁定，没有传递依赖、发行物哈希、解析工具版本或测试依赖。
+- **根本原因：** 人工依赖意图文件同时承担了不可变安装清单职责，但两者需要不同更新和审计流程。
+- **修复前失败测试：** `DependencyLockTests` 因 `requirements.lock` 不存在失败；既有全量检查中 pytest 持续以 `No module named pytest` 失败。
+- **最小根本修复：** 保留 `requirements.txt` 作为直接依赖输入并显式加入 pytest；用 CPython 3.11.15、pip 25.3、pip-tools 7.5.2 生成全传递依赖 `requirements.lock`，每项精确版本且附 PyPI SHA-256；README 固定 Metal CMake 参数与 `--require-hashes` 安装命令。
+- **修复后证明：** 锁结构测试验证 20+ 包全部 `==` 且带 SHA-256，并点名关键传递依赖；全新 macOS arm64 venv 从锁完成 Metal 源码构建、52 项 pytest 和 `pip check`；当前环境同样 52 项通过。
+- **文档与代码差异：** 审计点名的传递依赖全部出现在锁中；此外补齐 pytest、iniconfig、pluggy、pygments 等测试链。
+- **剩余风险：** PyPI sdist 的隔离构建依赖由 PEP 517 引导安装，源码本身受锁内 hash 保护但编译器/Xcode SDK 不在 Python 锁内；README 固定已验证的 macOS/CPython 与 CMake 参数，跨 OS 需另建平台锁并验证。

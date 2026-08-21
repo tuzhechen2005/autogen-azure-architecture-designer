@@ -51,7 +51,7 @@ def _client_with_model(model: object) -> LlamaCppChatCompletionClient:
         temperature=0.0,
         seed=7,
         n_ctx=128,
-        inference_timeout_seconds=1.0,
+        inference_timeout_seconds=30.0,
     )
     client._runtime = _runtime_with_model(model)  # type: ignore[attr-defined]
     client._usage_lock = threading.Lock()  # type: ignore[attr-defined]

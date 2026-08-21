@@ -51,16 +51,19 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-Apple Silicon 建议先从源码编译带 Metal 支持的 `llama-cpp-python`：
+Apple Silicon 使用完整哈希锁文件安装，并从源码编译带 Metal 支持的
+`llama-cpp-python`：
 
 ```bash
 CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_APPLE_SILICON_PROCESSOR=arm64 -DGGML_METAL=on" \
-python -m pip install --no-binary=llama-cpp-python llama-cpp-python==0.3.34
-
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes --no-binary=llama-cpp-python \
+  -r requirements.lock
 ```
 
 如默认 PyPI 在当前网络不可达，可在上述 `pip install` 命令中临时增加可信的 `--index-url`；仓库不强制绑定镜像。
+`requirements.txt` 是人工维护的直接依赖输入；`requirements.lock` 是 Python 3.11 的完整
+传递依赖与 SHA-256 锁。锁文件使用 `pip 25.3`、`pip-tools 7.5.2` 生成，并已在
+macOS Apple Silicon 的全新虚拟环境中完成 Metal 源码构建、`pip check` 和离线测试。
 
 ## 准备 Phi-3 模型
 
@@ -104,6 +107,7 @@ streamlit run app.py
 ```bash
 python scripts/smoke_test.py --check-config
 python scripts/orchestrator_smoke_test.py
+python -m pytest -q
 python -m compileall -q app.py src scripts
 ```
 
@@ -126,7 +130,8 @@ PHI3_N_GPU_LAYERS=0 python scripts/smoke_test.py
 ```text
 .
 ├── app.py                         Streamlit 入口
-├── requirements.txt              直接依赖版本
+├── requirements.txt              人工维护的直接依赖版本
+├── requirements.lock             完整传递依赖版本与 SHA-256
 ├── src/
 │   ├── config.py                  本地模型与轮次配置
 │   ├── local_model_client.py      AutoGen ↔ llama.cpp 适配
