@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 import threading
+import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,10 @@ if TYPE_CHECKING:
 
 class LocalModelProtocolError(RuntimeError):
     """Raised when AutoGen asks the local text-only model for unsupported behavior."""
+
+
+class LocalModelTimeoutError(TimeoutError):
+    """Raised when local inference exceeds its configured wall-clock deadline."""
 
 
 _PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
@@ -137,11 +142,48 @@ class LlamaCppModelRuntime:
         if self._closed:
             raise LocalModelProtocolError("Local model runtime is closed")
 
-    def generate(self, prompt: str, **kwargs: object) -> dict[str, object]:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
         with self._lock:
             self._ensure_open()
             self._model.reset()
-            return self._model(prompt, **kwargs)
+            abort_callback: object | None = None
+            low_level_context: object | None = None
+            llama_cpp_module: object | None = None
+            if should_abort is not None:
+                from llama_cpp import StoppingCriteriaList, llama_cpp
+
+                kwargs["stopping_criteria"] = StoppingCriteriaList(
+                    [lambda _input_ids, _logits: should_abort()]
+                )
+                model_context = getattr(self._model, "_ctx", None)
+                low_level_context = getattr(model_context, "ctx", None)
+                if low_level_context is not None:
+                    abort_callback = llama_cpp.ggml_abort_callback(
+                        lambda _data: should_abort()
+                    )
+                    llama_cpp.llama_set_abort_callback(
+                        low_level_context,
+                        abort_callback,
+                        None,
+                    )
+                    llama_cpp_module = llama_cpp
+            try:
+                return self._model(prompt, **kwargs)
+            finally:
+                if low_level_context is not None and llama_cpp_module is not None:
+                    llama_cpp_module.llama_set_abort_callback(
+                        low_level_context,
+                        llama_cpp_module.ggml_abort_callback(),
+                        None,
+                    )
+                # Keep the ctypes callback alive until after native generation ends.
+                _ = abort_callback
 
     def count_tokens(self, prompt: str) -> int:
         with self._lock:
@@ -275,17 +317,61 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
                 f"Unsupported generation arguments: {sorted(unknown)}"
             )
 
-        response = self._runtime.generate(
-            prompt,
-            max_tokens=int(extra_create_args.get("max_tokens", self._config.max_tokens)),
-            temperature=float(
-                extra_create_args.get("temperature", self._config.temperature)
-            ),
-            top_p=float(extra_create_args.get("top_p", 1.0)),
-            stop=extra_create_args.get("stop", ["<|end|>"]),
-            seed=self._config.seed,
-            echo=False,
+        max_tokens = int(
+            extra_create_args.get("max_tokens", self._config.max_tokens)
         )
+        if max_tokens < 1:
+            raise LocalModelProtocolError("max_tokens must be at least 1")
+        prompt_tokens = await asyncio.to_thread(self._runtime.count_tokens, prompt)
+        if prompt_tokens + max_tokens > self._config.n_ctx:
+            raise LocalModelProtocolError(
+                "Requested prompt and completion exceed the model context budget"
+            )
+
+        deadline = time.monotonic() + self._config.inference_timeout_seconds
+        abort_event = threading.Event()
+
+        def should_abort() -> bool:
+            return (
+                abort_event.is_set()
+                or (
+                    cancellation_token is not None
+                    and cancellation_token.is_cancelled()
+                )
+                or time.monotonic() >= deadline
+            )
+
+        try:
+            response = await asyncio.to_thread(
+                self._runtime.generate,
+                prompt,
+                should_abort=should_abort,
+                max_tokens=max_tokens,
+                temperature=float(
+                    extra_create_args.get("temperature", self._config.temperature)
+                ),
+                top_p=float(extra_create_args.get("top_p", 1.0)),
+                stop=extra_create_args.get("stop", ["<|end|>"]),
+                seed=self._config.seed,
+                echo=False,
+            )
+        except asyncio.CancelledError:
+            abort_event.set()
+            raise
+        except Exception as exc:
+            if cancellation_token is not None and cancellation_token.is_cancelled():
+                raise asyncio.CancelledError from exc
+            if time.monotonic() >= deadline:
+                raise LocalModelTimeoutError(
+                    "Local model inference exceeded its wall-clock timeout"
+                ) from exc
+            raise
+        if cancellation_token is not None and cancellation_token.is_cancelled():
+            raise asyncio.CancelledError
+        if time.monotonic() >= deadline:
+            raise LocalModelTimeoutError(
+                "Local model inference exceeded its wall-clock timeout"
+            )
         choice = response["choices"][0]
         content = str(choice.get("text") or "").strip()
         raw_usage = response.get("usage", {})

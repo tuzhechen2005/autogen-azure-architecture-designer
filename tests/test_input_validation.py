@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import unittest
 from unittest.mock import patch
 
@@ -22,7 +23,27 @@ class CountingScriptedClient(ScriptedModelClient):
         return await super().create(*args, **kwargs)  # type: ignore[arg-type]
 
 
+class SlowScriptedClient(ScriptedModelClient):
+    async def create(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(1)
+        return await super().create(*args, **kwargs)  # type: ignore[arg-type]
+
+
 class EarlyInputValidationTests(unittest.TestCase):
+    def test_whole_run_has_a_wall_clock_deadline(self) -> None:
+        client = SlowScriptedClient(["unused"])
+        started = time.monotonic()
+
+        result = asyncio.run(
+            ArchitectureOrchestrator(client, max_run_seconds=0.02).run(
+                "Design a small highly available API on Azure."
+            )
+        )
+
+        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertIn("wall-clock timeout", result.error or "")
+        self.assertLess(time.monotonic() - started, 0.5)
+
     def test_orchestrator_returns_failed_result_without_model_call(self) -> None:
         for requirements in (" " * 10, "\u200b" * 10, "\x00" * 10):
             with self.subTest(requirements=repr(requirements)):

@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from autogen_core import CancellationToken
 from autogen_core.models import AssistantMessage, RequestUsage, UserMessage
 
 from src.config import AppConfig
@@ -40,11 +41,15 @@ def _runtime_with_model(model: object) -> LlamaCppModelRuntime:
 
 
 def _client_with_model(model: object) -> LlamaCppChatCompletionClient:
+    if not hasattr(model, "tokenize"):
+        model.tokenize = lambda *args, **kwargs: [1]  # type: ignore[attr-defined]
     client = object.__new__(LlamaCppChatCompletionClient)
     client._config = SimpleNamespace(  # type: ignore[attr-defined]
         max_tokens=32,
         temperature=0.0,
         seed=7,
+        n_ctx=128,
+        inference_timeout_seconds=1.0,
     )
     client._runtime = _runtime_with_model(model)  # type: ignore[attr-defined]
     client._usage_lock = threading.Lock()  # type: ignore[attr-defined]
@@ -115,6 +120,98 @@ class FinishReasonTests(unittest.TestCase):
         client = _client_with_model(LengthLimitedModel())
 
         with self.assertRaisesRegex(LocalModelProtocolError, "token limit"):
+            asyncio.run(
+                client.create(
+                    [UserMessage(content="return JSON", source="user")]
+                )
+            )
+
+
+class InferenceBoundTests(unittest.TestCase):
+    def test_rejects_prompt_and_completion_over_context_budget(self) -> None:
+        class OversizedPromptModel:
+            def reset(self) -> None:
+                pass
+
+            def tokenize(self, *args: object, **kwargs: object) -> list[int]:
+                return list(range(100))
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 1},
+                }
+
+        client = _client_with_model(OversizedPromptModel())
+
+        with self.assertRaisesRegex(LocalModelProtocolError, "context budget"):
+            asyncio.run(
+                client.create(
+                    [UserMessage(content="return JSON", source="user")]
+                )
+            )
+
+    def test_cancels_during_generation(self) -> None:
+        class CooperativelySlowModel:
+            def reset(self) -> None:
+                pass
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                stopping_criteria = kwargs.get("stopping_criteria")
+                for _ in range(50):
+                    time.sleep(0.002)
+                    if stopping_criteria is not None and stopping_criteria([], None):
+                        break
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        client = _client_with_model(CooperativelySlowModel())
+        client._config.inference_timeout_seconds = 1.0  # type: ignore[attr-defined]
+        cancellation_token = CancellationToken()
+        caught: list[BaseException] = []
+
+        def invoke() -> None:
+            try:
+                asyncio.run(
+                    client.create(
+                        [UserMessage(content="return JSON", source="user")],
+                        cancellation_token=cancellation_token,
+                    )
+                )
+            except BaseException as exc:
+                caught.append(exc)
+
+        worker = threading.Thread(target=invoke)
+        worker.start()
+        time.sleep(0.01)
+        cancellation_token.cancel()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(any(isinstance(exc, asyncio.CancelledError) for exc in caught))
+
+    def test_times_out_cooperative_generation(self) -> None:
+        class CooperativelySlowModel:
+            def reset(self) -> None:
+                pass
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                stopping_criteria = kwargs.get("stopping_criteria")
+                for _ in range(50):
+                    time.sleep(0.002)
+                    if stopping_criteria is not None and stopping_criteria([], None):
+                        break
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        client = _client_with_model(CooperativelySlowModel())
+        client._config.inference_timeout_seconds = 0.02  # type: ignore[attr-defined]
+
+        with self.assertRaises(TimeoutError):
             asyncio.run(
                 client.create(
                     [UserMessage(content="return JSON", source="user")]

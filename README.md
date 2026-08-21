@@ -78,10 +78,13 @@ hf download microsoft/Phi-3-mini-4k-instruct-gguf \
 ```bash
 export PHI3_MODEL_PATH="/absolute/path/to/Phi-3-mini-4k-instruct-q4.gguf"
 export PHI3_MODEL_ROOT="/absolute/path/to"
+export PHI3_INFERENCE_TIMEOUT_SECONDS=120
 ```
 
 也可在 Streamlit 侧边栏输入 `PHI3_MODEL_ROOT` 目录内的绝对路径。模型必须是
 该目录内非符号链接的常规 `.gguf` 文件，并包含有效 GGUF 文件头。不要将 GGUF 加入 Git。
+单次本地推理默认限时 120 秒；完整架构协作默认限时 600 秒。生成前还会验证
+prompt token 与最大 completion token 之和不超过模型上下文。
 
 ## 运行 Web 应用
 

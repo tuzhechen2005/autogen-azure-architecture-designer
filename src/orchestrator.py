@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from time import monotonic
 from typing import TypeVar
 from uuid import uuid4
 
 from autogen_agentchat.agents import AssistantAgent
+from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient
 from pydantic import BaseModel, ValidationError
 
@@ -140,15 +143,19 @@ class ArchitectureOrchestrator:
         *,
         max_review_rounds: int = 2,
         max_parse_retries: int = 1,
+        max_run_seconds: float = 600.0,
         event_sink: EventSink | None = None,
     ) -> None:
         if not 1 <= max_review_rounds <= 5:
             raise ValueError("max_review_rounds must be between 1 and 5")
         if not 0 <= max_parse_retries <= 2:
             raise ValueError("max_parse_retries must be between 0 and 2")
+        if not 0.01 <= max_run_seconds <= 3600.0:
+            raise ValueError("max_run_seconds must be between 0.01 and 3600")
         self._model_client = model_client
         self._max_review_rounds = max_review_rounds
         self._max_parse_retries = max_parse_retries
+        self._max_run_seconds = max_run_seconds
         self._event_sink = event_sink
 
     def _emit(self, event: CollaborationEvent) -> None:
@@ -182,11 +189,28 @@ class ArchitectureOrchestrator:
         expected_revision: int | None = None,
         previous_plan: ArchitecturePlan | None = None,
         prior_review: ArchitectureReview | None = None,
+        run_deadline: float,
     ) -> SchemaT:
         next_task = task
         last_error: StructuredOutputError | None = None
         for attempt in range(self._max_parse_retries + 1):
-            result = await agent.run(task=next_task)
+            remaining_seconds = run_deadline - monotonic()
+            if remaining_seconds <= 0:
+                raise TimeoutError("Architecture run exceeded its wall-clock timeout")
+            cancellation_token = CancellationToken()
+            try:
+                result = await asyncio.wait_for(
+                    agent.run(
+                        task=next_task,
+                        cancellation_token=cancellation_token,
+                    ),
+                    timeout=remaining_seconds,
+                )
+            except TimeoutError as exc:
+                cancellation_token.cancel()
+                raise TimeoutError(
+                    "Architecture run exceeded its wall-clock timeout"
+                ) from exc
             raw_content = self._last_content(result)
             try:
                 parsed = parse_structured_output(raw_content, schema)
@@ -264,6 +288,7 @@ class ArchitectureOrchestrator:
 
         run_id = uuid4().hex
         started_at = datetime.now(timezone.utc)
+        run_deadline = monotonic() + self._max_run_seconds
         request: ArchitectureRequest | None = None
         transcript: list[TranscriptMessage] = []
         plan: ArchitecturePlan | None = None
@@ -288,6 +313,7 @@ class ArchitectureOrchestrator:
                 review_round=0,
                 transcript=transcript,
                 expected_revision=1,
+                run_deadline=run_deadline,
             )
 
             for review_round in range(1, self._max_review_rounds + 1):
@@ -307,6 +333,7 @@ class ArchitectureOrchestrator:
                     phase=MessagePhase.REVIEW,
                     review_round=review_round,
                     transcript=transcript,
+                    run_deadline=run_deadline,
                 )
                 rounds_completed = review_round
 
@@ -355,6 +382,7 @@ class ArchitectureOrchestrator:
                         expected_revision=plan.revision + 1,
                         previous_plan=plan,
                         prior_review=review,
+                        run_deadline=run_deadline,
                     )
 
             result = self._build_result(

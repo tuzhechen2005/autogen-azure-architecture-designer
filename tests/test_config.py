@@ -67,3 +67,16 @@ class ModelPathValidationTests(unittest.TestCase):
 
     def test_accepts_regular_gguf_file(self) -> None:
         AppConfig(model_path=self.valid_model, model_root=self.root).validate()
+
+    def test_rejects_unbounded_inference_timeout(self) -> None:
+        for timeout in (0.0, 600.01):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(
+                    ConfigurationError,
+                    "PHI3_INFERENCE_TIMEOUT_SECONDS",
+                ):
+                    AppConfig(
+                        model_path=self.valid_model,
+                        model_root=self.root,
+                        inference_timeout_seconds=timeout,
+                    ).validate()

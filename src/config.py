@@ -61,6 +61,7 @@ class AppConfig:
     temperature: float = 0.0
     n_gpu_layers: int = -1
     max_review_rounds: int = 2
+    inference_timeout_seconds: float = 120.0
     seed: int = 42
 
     @classmethod
@@ -80,6 +81,10 @@ class AppConfig:
             temperature=_read_float("PHI3_TEMPERATURE", 0.0),
             n_gpu_layers=_read_int("PHI3_N_GPU_LAYERS", -1),
             max_review_rounds=_read_int("ARCHITECTURE_MAX_REVIEW_ROUNDS", 2),
+            inference_timeout_seconds=_read_float(
+                "PHI3_INFERENCE_TIMEOUT_SECONDS",
+                120.0,
+            ),
             seed=_read_int("PHI3_SEED", 42),
         )
         config.validate(require_model=require_model)
@@ -97,6 +102,10 @@ class AppConfig:
         if not 1 <= self.max_review_rounds <= 5:
             raise ConfigurationError(
                 "ARCHITECTURE_MAX_REVIEW_ROUNDS must be between 1 and 5"
+            )
+        if not 0.01 <= self.inference_timeout_seconds <= 600.0:
+            raise ConfigurationError(
+                "PHI3_INFERENCE_TIMEOUT_SECONDS must be between 0.01 and 600"
             )
 
     def _validate_model_file(self) -> None:

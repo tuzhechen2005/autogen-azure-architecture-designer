@@ -12,7 +12,7 @@
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | pushed | `tests/test_orchestrator_revision.py`; `scripts/orchestrator_smoke_test.py` | `src/orchestrator.py`; `src/schemas.py`; `src/prompts.py`; `src/ui.py` | `9236359c12bc6ad8d1936775ae0ba792f80295da` | pushed | 术语约束证明设计文本已包含要求，不证明真实 Azure 行为 |
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | pushed | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | `805d0957c080fe53b4810a964a585f1f0e67b830` | pushed | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | pushed | `tests/test_config.py` | `src/config.py`; `app.py`; `.env.example`; `README.md` | `84ada63414d903492e73004ebd016dbcc8be2f4c` | pushed | 文件通过边界检查不保证 llama.cpp 能解析全部 GGUF 元数据 |
-| SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | fixed-locally | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | pending | pending | 真实 GGUF 的底层 abort callback 仍需验证 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -140,3 +140,18 @@
 - **修复后证明：** 7 项测试覆盖所有拒绝路径、根外有效文件、路径脱敏与根内有效临时 GGUF；runtime 仍以 resolved 路径作为唯一身份。
 - **文档与代码差异：** 无；审计描述可稳定复现。
 - **剩余风险：** 4 字节 magic 和大小边界不能证明完整 GGUF 元数据正确；最终解析仍由本地 llama.cpp 完成并可安全报错。
+
+## SEC-09 第一性原则记录
+
+- **资产：** 本机 CPU/GPU、共享 llama.cpp context、公平排队能力和每次架构运行的确定终态。
+- **不可信入口/故障：** 超长需求、过大的 completion 预算、迟滞/故障模型、页面刷新与调用方取消。
+- **信任边界：** async AutoGen 调用进入同步 llama.cpp 推理线程，以及多步智能体循环共享同一总运行预算。
+- **被破坏的不变量：** prompt 与 completion 必须装入 context；单次推理和完整运行必须有墙钟上限；取消必须传播到正在执行的原生生成。
+- **最小失败路径：** 100-token prompt 配 32-token completion 进入 128-token context；协作式慢模型无视超时；生成开始后取消仍运行到自然结束。
+- **当前代码为何允许：** 只在 `_model(...)` 前检查一次取消；同步生成直接阻塞事件循环；`remaining_tokens()` 没有成为准入条件；调度器没有共享 deadline。
+- **根本原因：** async 接口只改变了函数签名，没有为同步原生工作建立工作线程、协作中断信号和分层时间预算。
+- **修复前失败测试：** `InferenceBoundTests` 的 context budget、生成期取消、推理超时三个用例全部失败；分别观察到生成被调用、无 `CancelledError`、无 `TimeoutError`。
+- **最小根本修复：** 生成前在线程中分词并拒绝超预算；同步推理移入工作线程；同一 abort predicate 连接 CancellationToken、墙钟 deadline、llama stopping criteria 与底层 abort callback；调度器用共享 deadline 和 `asyncio.wait_for` 限制所有重试与轮次。
+- **修复后证明：** 三条原始回归通过；并发串行与截断拒绝相邻回归通过；新增完整 run 20ms deadline 用例在 500ms 内返回 failed；配置拒绝非正数和超过 600 秒的推理期限。
+- **文档与代码差异：** 无；修复前同步阻塞、仅前置取消和未使用 token 预算均稳定复现。
+- **验证限制：** 离线假模型证明 Python 层停止条件与终态映射；未加载真实 GGUF，需验证 llama.cpp 0.3.34 在 Metal/CPU 长生成中的 callback 延迟和原生资源回收。
