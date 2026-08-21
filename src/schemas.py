@@ -126,6 +126,8 @@ class ArchitectureReview(StrictModel):
 
     @model_validator(mode="after")
     def decision_matches_required_changes(self) -> "ArchitectureReview":
+        if self.decision is ReviewDecision.APPROVED and self.findings:
+            raise ValueError("approved reviews cannot contain findings")
         if self.decision is ReviewDecision.APPROVED and self.required_changes:
             raise ValueError("approved reviews cannot contain required_changes")
         if (

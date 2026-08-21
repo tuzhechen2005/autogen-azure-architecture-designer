@@ -59,7 +59,7 @@ Required JSON shape:
   }],
   "required_changes":["..."]
 }
-If decision is approved, required_changes must be [].
+If decision is approved, findings and required_changes must both be [].
 If decision is revision_required, required_changes must contain at least one item.
 """
 
