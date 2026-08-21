@@ -196,6 +196,10 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         finish_reason = str(choice.get("finish_reason") or "unknown")
         if finish_reason not in {"stop", "length", "function_calls", "content_filter", "unknown"}:
             finish_reason = "unknown"
+        if finish_reason == "length":
+            raise LocalModelProtocolError(
+                "Model output reached the token limit and is truncated"
+            )
         return CreateResult(
             finish_reason=finish_reason,
             content=content,

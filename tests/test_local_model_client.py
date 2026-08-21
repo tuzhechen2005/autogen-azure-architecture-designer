@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
-from autogen_core.models import AssistantMessage, UserMessage
+from types import SimpleNamespace
 
-from src.local_model_client import LocalModelProtocolError, _render_phi3_prompt
+from autogen_core.models import AssistantMessage, RequestUsage, UserMessage
+
+from src.local_model_client import (
+    LlamaCppChatCompletionClient,
+    LocalModelProtocolError,
+    _render_phi3_prompt,
+)
 from src.prompts import build_initial_plan_task
 
 
@@ -58,3 +65,38 @@ class Phi3ProtocolBoundaryTests(unittest.TestCase):
             "<|user|>\n设计一个高可用 Web 系统<|end|>\n"
             "<|assistant|>\n",
         )
+
+
+class FinishReasonTests(unittest.TestCase):
+    def test_rejects_output_truncated_by_token_limit(self) -> None:
+        class LengthLimitedModel:
+            def reset(self) -> None:
+                pass
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                return {
+                    "choices": [
+                        {
+                            "text": '{"value":1}',
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                }
+
+        client = object.__new__(LlamaCppChatCompletionClient)
+        client._config = SimpleNamespace(  # type: ignore[attr-defined]
+            max_tokens=32,
+            temperature=0.0,
+            seed=7,
+        )
+        client._model = LengthLimitedModel()  # type: ignore[attr-defined]
+        client._actual_usage = RequestUsage(prompt_tokens=0, completion_tokens=0)
+        client._total_usage = RequestUsage(prompt_tokens=0, completion_tokens=0)
+
+        with self.assertRaisesRegex(LocalModelProtocolError, "token limit"):
+            asyncio.run(
+                client.create(
+                    [UserMessage(content="return JSON", source="user")]
+                )
+            )
