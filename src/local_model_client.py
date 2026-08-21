@@ -60,6 +60,23 @@ def _message_to_llama(message: LLMMessage) -> dict[str, str]:
     return {"role": role, "content": _content_to_text(message.content)}
 
 
+def _render_phi3_prompt(messages: Sequence[LLMMessage]) -> str:
+    """Render AutoGen messages with Phi-3's native instruct tokens."""
+
+    role_map = {"system": "system", "user": "user", "assistant": "assistant"}
+    parts: list[str] = []
+    for message in messages:
+        item = _message_to_llama(message)
+        role = role_map.get(item["role"])
+        if role is None:
+            raise LocalModelProtocolError(
+                "Function results are not supported by the text-only Phi-3 protocol"
+            )
+        parts.append(f"<|{role}|>\n{item['content']}<|end|>\n")
+    parts.append("<|assistant|>\n")
+    return "".join(parts)
+
+
 class LlamaCppChatCompletionClient(ChatCompletionClient):
     """A deterministic text-only AutoGen client for local GGUF models.
 
@@ -121,7 +138,7 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         if cancellation_token is not None and cancellation_token.is_cancelled():
             raise asyncio.CancelledError
 
-        llama_messages = [_message_to_llama(message) for message in messages]
+        prompt = _render_phi3_prompt(messages)
         allowed_overrides = {"max_tokens", "temperature", "top_p", "stop"}
         unknown = set(extra_create_args) - allowed_overrides
         if unknown:
@@ -129,18 +146,20 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
                 f"Unsupported generation arguments: {sorted(unknown)}"
             )
 
-        response = self._model.create_chat_completion(
-            messages=llama_messages,
+        self._model.reset()
+        response = self._model(
+            prompt,
             max_tokens=int(extra_create_args.get("max_tokens", self._config.max_tokens)),
             temperature=float(
                 extra_create_args.get("temperature", self._config.temperature)
             ),
             top_p=float(extra_create_args.get("top_p", 0.9)),
-            stop=extra_create_args.get("stop"),
+            stop=extra_create_args.get("stop", ["<|end|>"]),
             seed=self._config.seed,
+            echo=False,
         )
         choice = response["choices"][0]
-        content = choice["message"].get("content") or ""
+        content = str(choice.get("text") or "").strip()
         raw_usage = response.get("usage", {})
         usage = RequestUsage(
             prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
@@ -198,11 +217,12 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
     ) -> int:
         if tools:
             raise LocalModelProtocolError("Native tool calling is not supported")
-        prompt = "\n".join(
-            f"{item['role']}: {item['content']}"
-            for item in (_message_to_llama(message) for message in messages)
+        prompt = _render_phi3_prompt(messages)
+        return len(
+            self._model.tokenize(
+                prompt.encode("utf-8"), add_bos=True, special=True
+            )
         )
-        return len(self._model.tokenize(prompt.encode("utf-8"), add_bos=True))
 
     def remaining_tokens(
         self, messages: Sequence[LLMMessage], *, tools: Sequence[Any] = ()
