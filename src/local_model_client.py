@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from autogen_core import CancellationToken
 from autogen_core.models import (
@@ -19,9 +20,11 @@ from autogen_core.models import (
     SystemMessage,
     UserMessage,
 )
-from llama_cpp import Llama
-
 from .config import AppConfig
+
+
+if TYPE_CHECKING:
+    from llama_cpp import Llama
 
 
 class LocalModelProtocolError(RuntimeError):
@@ -86,8 +89,12 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
     """
 
     def __init__(self, config: AppConfig) -> None:
+        if config.n_gpu_layers == 0:
+            os.environ["GGML_METAL_DEVICES"] = "none"
+        from llama_cpp import Llama
+
         self._config = config
-        self._model = Llama(
+        self._model: Llama = Llama(
             model_path=str(config.model_path),
             n_ctx=config.n_ctx,
             n_gpu_layers=config.n_gpu_layers,

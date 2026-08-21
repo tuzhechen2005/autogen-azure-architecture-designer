@@ -49,3 +49,4 @@
 - 展示 Azure 资源表、数据流、高可用/安全/运维/成本策略、审查问题和完整角色消息。
 - 明确区分审查通过与达到轮次上限，后者不展示为“已通过”。
 - 模型使用 `st.cache_resource` 按配置复用，运行结果保存在 `st.session_state`，普通页面重绘不重复触发推理。
+- CPU 模式在延迟导入 `llama_cpp` 之前设置 `GGML_METAL_DEVICES=none`，确保无 Metal 环境不会在模型初始化前尝试发现 GPU。
