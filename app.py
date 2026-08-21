@@ -174,7 +174,7 @@ def main() -> None:
     if generate:
         try:
             result = run_architecture(requirements, settings)
-            st.session_state.architecture_result = result.model_dump(mode="json")
+            st.session_state.architecture_result = result.model_dump()
         except (ConfigurationError, ValueError) as exc:
             st.error(str(exc), icon="⚠️")
         except Exception as exc:

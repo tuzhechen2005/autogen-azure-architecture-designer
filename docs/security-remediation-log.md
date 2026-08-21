@@ -8,7 +8,7 @@
 | SEC-02 | 矛盾审查仍被标记为通过 | P1 | 任何未解决 finding 都不能 approved | pushed | `tests/test_schemas.py` | `src/schemas.py`; `src/prompts.py` | `6cfc4845440a5742b62ac8704932490fa4917f53` | pushed | 确定性架构完整性检查分别由后续问题处理 |
 | SEC-03 | JSON 扫描器接受非唯一、非完整顶层对象 | P1 | 歧义、截断和重复键输出不得静默接受 | pushed | `tests/test_output_parser.py`; `tests/test_local_model_client.py` | `src/output_parser.py`; `src/local_model_client.py` | `3fb200b7e48bdf9e8dc583afe448cae8bb75ba9d` | pushed | 未知 finish reason 的策略仍保守保留为 unknown |
 | SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `app.py` | `6e7c703b7e5006ce1be3718500d2dbe7809f092a` | pushed | 真实 GGUF 峰值内存和原生并发行为需本地运行验证 |
-| SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | fixed-locally | `tests/test_schemas.py`; `tests/test_output_parser.py` | `src/schemas.py`; `src/output_parser.py`; `app.py` | pending | pending | 修订身份和必改项迁移约束由 SEC-06 处理 |
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -80,3 +80,18 @@
 - **修复后证明：** 双线程最大并发为 1 且 usage 完整；生成参数变化复用同一 runtime；身份变化按 close-old→load-new 顺序执行；close 幂等且关闭后调用安全失败。
 - **文档与代码差异：** 无；无锁并发和生成参数参与缓存键均可复现。
 - **验证限制：** 未加载真实 GGUF，尚未测量 3–5 个历史键的实际峰值内存，也未验证 llama.cpp 原生崩溃形态；代码级单槽和串行不变量已离线证明。
+
+## SEC-05 第一性原则记录
+
+- **资产：** 架构计划字段的原始语义、资源依赖完整性以及审批输入可信度。
+- **不可信入口：** 模型 JSON 中的类型、缺失字段、资源名称和依赖边。
+- **信任边界：** 严格 JSON 解析结果进入 Pydantic 数据契约和调度器。
+- **被破坏的不变量：** 格式可解析不等于架构有效；模型输出不得被类型转换、默认值或推断逻辑静默修复。
+- **最小失败路径：** `revision` 使用字符串/浮点/布尔，省略关键字段，或提交重名、悬空、自依赖/循环资源图；旧 Schema 全部接受。
+- **当前代码为何允许：** `StrictModel` 未启用 strict；模型字段带默认值；before-validator 会包装标量并从 recommendation 推断缺失字段；计划没有图校验器。
+- **根本原因：** 数据契约承担了容错修复职责，并只验证局部字段形状，没有表达跨资源语义。
+- **修复前失败测试：** `ArchitecturePlanStrictnessTests` 共 16 个子用例失败；审查字段默认/派生共 4 个子用例失败。
+- **最小根本修复：** 全局 StrictModel 开启严格模式；所有模型输出字段改为显式必填；删除标量包装和字段推断；计划 after-validator 强制名称唯一、依赖无重复、引用闭包、无自依赖且无环。
+- **修复后证明：** 严格 Schema 和解析器 13 项测试通过；完整正常计划、无 finding 审批及脚本化 plan→review→revision→approval 流程通过。
+- **文档与代码差异：** 无；审计列出的类型转换、默认值和依赖图问题均可复现。
+- **剩余风险：** 修订阶段保持资源身份并落实 required_changes 的状态迁移约束属于 SEC-06。

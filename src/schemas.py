@@ -10,9 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
-    """Base model that rejects invented fields and normalizes whitespace."""
+    """Base model that rejects invented fields, coercion, and unsafe whitespace."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+    )
 
 
 class ArchitectureRequest(StrictModel):
@@ -27,10 +31,10 @@ class AzureResource(StrictModel):
     name: str = Field(min_length=2, max_length=80)
     resource_type: str = Field(min_length=3, max_length=120)
     region: str = Field(min_length=2, max_length=60)
-    sku: str = Field(default="TBD", min_length=1, max_length=80)
+    sku: str = Field(min_length=1, max_length=80)
     purpose: str = Field(min_length=2, max_length=500)
-    high_availability: list[str] = Field(default_factory=list, max_length=8)
-    depends_on: list[str] = Field(default_factory=list, max_length=12)
+    high_availability: list[str] = Field(max_length=8)
+    depends_on: list[str] = Field(max_length=12)
 
 
 class ArchitecturePlan(StrictModel):
@@ -38,38 +42,59 @@ class ArchitecturePlan(StrictModel):
 
     title: str = Field(min_length=3, max_length=160)
     summary: str = Field(min_length=10, max_length=1200)
-    revision: int = Field(default=1, ge=1, le=10)
-    assumptions: list[str] = Field(default_factory=list, max_length=12)
+    revision: int = Field(ge=1, le=10)
+    assumptions: list[str] = Field(max_length=12)
     resources: list[AzureResource] = Field(min_length=1, max_length=24)
     data_flow: list[str] = Field(min_length=1, max_length=16)
     high_availability_strategy: list[str] = Field(min_length=1, max_length=16)
-    security_strategy: list[str] = Field(default_factory=list, max_length=16)
-    operations_strategy: list[str] = Field(default_factory=list, max_length=16)
-    cost_notes: list[str] = Field(default_factory=list, max_length=12)
+    security_strategy: list[str] = Field(max_length=16)
+    operations_strategy: list[str] = Field(max_length=16)
+    cost_notes: list[str] = Field(max_length=12)
 
-    @model_validator(mode="before")
-    @classmethod
-    def wrap_scalar_strategy_items(cls, data: object) -> object:
-        """Preserve a scalar strategy value as a one-item list when necessary."""
+    @model_validator(mode="after")
+    def dependency_graph_is_valid(self) -> "ArchitecturePlan":
+        names = [resource.name for resource in self.resources]
+        if len(names) != len(set(names)):
+            raise ValueError("resource names must be unique")
 
-        if not isinstance(data, dict):
-            return data
-        list_fields = (
-            "assumptions",
-            "data_flow",
-            "high_availability_strategy",
-            "security_strategy",
-            "operations_strategy",
-            "cost_notes",
-        )
-        normalized = dict(data)
-        changed = False
-        for field_name in list_fields:
-            value = normalized.get(field_name)
-            if isinstance(value, str) and value.strip():
-                normalized[field_name] = [value]
-                changed = True
-        return normalized if changed else data
+        known_names = set(names)
+        graph: dict[str, tuple[str, ...]] = {}
+        for resource in self.resources:
+            dependencies = tuple(resource.depends_on)
+            if len(dependencies) != len(set(dependencies)):
+                raise ValueError(
+                    f"resource {resource.name} contains duplicate dependencies"
+                )
+            if resource.name in dependencies:
+                raise ValueError(
+                    f"resource {resource.name} cannot depend on itself"
+                )
+            unknown = set(dependencies) - known_names
+            if unknown:
+                raise ValueError(
+                    f"resource {resource.name} has unknown dependencies: "
+                    f"{sorted(unknown)}"
+                )
+            graph[resource.name] = dependencies
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visiting:
+                raise ValueError("resource dependency graph contains a cycle")
+            if name in visited:
+                return
+            visiting.add(name)
+            for dependency in graph[name]:
+                visit(dependency)
+            visiting.remove(name)
+            visited.add(name)
+
+        for name in names:
+            visit(name)
+        return self
+
 
 class ReviewDecision(str, Enum):
     APPROVED = "approved"
@@ -93,36 +118,9 @@ class ArchitectureReview(StrictModel):
 
     decision: ReviewDecision
     summary: str = Field(min_length=10, max_length=1000)
-    strengths: list[str] = Field(default_factory=list, max_length=12)
-    findings: list[ReviewFinding] = Field(default_factory=list, max_length=16)
-    required_changes: list[str] = Field(default_factory=list, max_length=12)
-
-    @model_validator(mode="before")
-    @classmethod
-    def derive_missing_required_changes(cls, data: object) -> object:
-        """Copy existing recommendations into the summary list when Phi-3 omits it."""
-
-        if not isinstance(data, dict):
-            return data
-        if data.get("decision") != ReviewDecision.REVISION_REQUIRED.value:
-            return data
-        if data.get("required_changes"):
-            return data
-        findings = data.get("findings")
-        if not isinstance(findings, list):
-            return data
-        recommendations = [
-            finding.get("recommendation")
-            for finding in findings
-            if isinstance(finding, dict)
-            and isinstance(finding.get("recommendation"), str)
-            and finding["recommendation"].strip()
-        ]
-        if not recommendations:
-            return data
-        normalized = dict(data)
-        normalized["required_changes"] = recommendations
-        return normalized
+    strengths: list[str] = Field(max_length=12)
+    findings: list[ReviewFinding] = Field(max_length=16)
+    required_changes: list[str] = Field(max_length=12)
 
     @model_validator(mode="after")
     def decision_matches_required_changes(self) -> "ArchitectureReview":

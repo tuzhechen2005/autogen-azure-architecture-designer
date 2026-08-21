@@ -61,9 +61,10 @@ def extract_json_object(raw: str) -> dict[str, object]:
 def parse_structured_output(raw: str, schema: type[SchemaT]) -> SchemaT:
     """Strictly decode a complete response and validate it without repair."""
 
-    value = extract_json_object(raw)
+    extract_json_object(raw)
+    text = _strip_outer_fence(raw)
     try:
-        return schema.model_validate(value)
+        return schema.model_validate_json(text)
     except ValidationError as exc:
         details = "; ".join(
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
