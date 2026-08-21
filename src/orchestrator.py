@@ -34,6 +34,85 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 EventSink = Callable[["CollaborationEvent"], None]
 
 
+def _revision_target_text(
+    plan: ArchitecturePlan,
+    target_field: str,
+    resource_name: str | None,
+) -> str:
+    scope, field_name = target_field.split(".", 1)
+    if scope == "resource":
+        resource = next(
+            (
+                candidate
+                for candidate in plan.resources
+                if candidate.name == resource_name
+            ),
+            None,
+        )
+        if resource is None:
+            raise StructuredOutputError(
+                f"revision constraint targets unknown resource: {resource_name}"
+            )
+        value = getattr(resource, field_name)
+    else:
+        value = getattr(plan, field_name)
+    if isinstance(value, list):
+        return "\n".join(value).casefold()
+    return str(value).casefold()
+
+
+def validate_revision_transition(
+    previous: ArchitecturePlan,
+    revised: ArchitecturePlan,
+    review: ArchitectureReview,
+) -> None:
+    """Enforce immutable identity and every machine-verifiable review change."""
+
+    if revised.revision != previous.revision + 1:
+        raise StructuredOutputError(
+            "schema validation failed: revision must increment by exactly one"
+        )
+
+    previous_by_name = {resource.name: resource for resource in previous.resources}
+    revised_by_name = {resource.name: resource for resource in revised.resources}
+    if previous_by_name.keys() != revised_by_name.keys():
+        raise StructuredOutputError(
+            "revision must preserve the resource names and resource count"
+        )
+
+    for name, previous_resource in previous_by_name.items():
+        revised_resource = revised_by_name[name]
+        if revised_resource.resource_type != previous_resource.resource_type:
+            raise StructuredOutputError(
+                f"revision must preserve resource type for {name}"
+            )
+        if set(revised_resource.depends_on) != set(previous_resource.depends_on):
+            raise StructuredOutputError(
+                f"revision must preserve dependency relationships for {name}"
+            )
+
+    if previous.model_dump(exclude={"revision"}) == revised.model_dump(
+        exclude={"revision"}
+    ):
+        raise StructuredOutputError(
+            "revision must make a substantive change beyond its revision number"
+        )
+
+    for change in review.required_changes:
+        target_text = _revision_target_text(
+            revised,
+            change.target_field,
+            change.resource_name,
+        )
+        missing_terms = [
+            term for term in change.required_terms if term.casefold() not in target_text
+        ]
+        if missing_terms:
+            raise StructuredOutputError(
+                f"revision did not satisfy required change: {change.description}"
+            )
+
+
 class EventType(str, Enum):
     STATUS = "status"
     AGENT_MESSAGE = "agent_message"
@@ -101,6 +180,8 @@ class ArchitectureOrchestrator:
         review_round: int,
         transcript: list[TranscriptMessage],
         expected_revision: int | None = None,
+        previous_plan: ArchitecturePlan | None = None,
+        prior_review: ArchitectureReview | None = None,
     ) -> SchemaT:
         next_task = task
         last_error: StructuredOutputError | None = None
@@ -118,6 +199,12 @@ class ArchitectureOrchestrator:
                         "schema validation failed: revision must equal "
                         f"{expected_revision}, got {parsed.revision}"
                     )
+                if previous_plan is not None and prior_review is not None:
+                    if not isinstance(parsed, ArchitecturePlan):
+                        raise StructuredOutputError(
+                            "revision transition requires an architecture plan"
+                        )
+                    validate_revision_transition(previous_plan, parsed, prior_review)
             except StructuredOutputError as exc:
                 last_error = exc
                 failed_message = TranscriptMessage(
@@ -266,6 +353,8 @@ class ArchitectureOrchestrator:
                         review_round=review_round,
                         transcript=transcript,
                         expected_revision=plan.revision + 1,
+                        previous_plan=plan,
+                        prior_review=review,
                     )
 
             result = self._build_result(

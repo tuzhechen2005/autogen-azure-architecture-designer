@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -102,6 +102,16 @@ class ReviewDecision(str, Enum):
 
 
 ReviewSeverity = Literal["critical", "high", "medium", "low"]
+RevisionTargetField = Literal[
+    "resource.high_availability",
+    "resource.sku",
+    "resource.region",
+    "resource.purpose",
+    "plan.high_availability_strategy",
+    "plan.security_strategy",
+    "plan.operations_strategy",
+]
+RequiredTerm = Annotated[str, Field(min_length=1, max_length=80)]
 
 
 class ReviewFinding(StrictModel):
@@ -113,6 +123,24 @@ class ReviewFinding(StrictModel):
     recommendation: str = Field(min_length=5, max_length=600)
 
 
+class RequiredChange(StrictModel):
+    """A reviewer correction with a bounded, machine-verifiable plan target."""
+
+    description: str = Field(min_length=5, max_length=600)
+    target_field: RevisionTargetField
+    resource_name: str | None
+    required_terms: list[RequiredTerm] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def target_matches_resource_scope(self) -> "RequiredChange":
+        targets_resource = self.target_field.startswith("resource.")
+        if targets_resource and self.resource_name is None:
+            raise ValueError("resource targets require resource_name")
+        if not targets_resource and self.resource_name is not None:
+            raise ValueError("plan targets cannot contain resource_name")
+        return self
+
+
 class ArchitectureReview(StrictModel):
     """The reviewer's structured high-availability verdict."""
 
@@ -120,7 +148,7 @@ class ArchitectureReview(StrictModel):
     summary: str = Field(min_length=10, max_length=1000)
     strengths: list[str] = Field(max_length=12)
     findings: list[ReviewFinding] = Field(max_length=16)
-    required_changes: list[str] = Field(max_length=12)
+    required_changes: list[RequiredChange] = Field(max_length=3)
 
     @model_validator(mode="after")
     def decision_matches_required_changes(self) -> "ArchitectureReview":

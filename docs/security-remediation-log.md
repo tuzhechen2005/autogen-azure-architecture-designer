@@ -9,7 +9,7 @@
 | SEC-03 | JSON 扫描器接受非唯一、非完整顶层对象 | P1 | 歧义、截断和重复键输出不得静默接受 | pushed | `tests/test_output_parser.py`; `tests/test_local_model_client.py` | `src/output_parser.py`; `src/local_model_client.py` | `3fb200b7e48bdf9e8dc583afe448cae8bb75ba9d` | pushed | 未知 finish reason 的策略仍保守保留为 unknown |
 | SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `app.py` | `6e7c703b7e5006ce1be3718500d2dbe7809f092a` | pushed | 真实 GGUF 峰值内存和原生并发行为需本地运行验证 |
 | SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | pushed | `tests/test_schemas.py`; `tests/test_output_parser.py` | `src/schemas.py`; `src/output_parser.py`; `app.py` | `bb8b8d9fca786638b1fe3ebe4ccd0d02d3a2286a` | pushed | 修订身份和必改项迁移约束由 SEC-06 处理 |
-| SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | fixed-locally | `tests/test_orchestrator_revision.py`; `scripts/orchestrator_smoke_test.py` | `src/orchestrator.py`; `src/schemas.py`; `src/prompts.py`; `src/ui.py` | pending | pending | 术语约束证明设计文本已包含要求，不证明真实 Azure 行为 |
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -95,3 +95,18 @@
 - **修复后证明：** 严格 Schema 和解析器 13 项测试通过；完整正常计划、无 finding 审批及脚本化 plan→review→revision→approval 流程通过。
 - **文档与代码差异：** 无；审计列出的类型转换、默认值和依赖图问题均可复现。
 - **剩余风险：** 修订阶段保持资源身份并落实 required_changes 的状态迁移约束属于 SEC-06。
+
+## SEC-06 第一性原则记录
+
+- **资产：** 计划资源身份、依赖语义、审查必改项以及状态机从 revision_required 到 approved 的可信度。
+- **不可信入口：** planner 生成的修订计划，以及 reviewer 生成的 required_changes。
+- **信任边界：** 已验证的当前计划/审查进入下一版计划，再进入后续审批。
+- **被破坏的不变量：** 修订必须保持资源身份与依赖关系、产生实质变化，并落实每个机器可验证的必改项。
+- **最小失败路径：** 只增加 revision 数字，或改名、增删资源、改变依赖，或仅在无关字段复述要求；旧调度器只检查 revision 数字，下一轮可直接 approved。
+- **当前代码为何允许：** “保持名称和数量”只存在于提示词；required_changes 是不可验证的自由文本；解析成功后没有前后状态比较。
+- **根本原因：** 状态迁移契约没有代码表示，控制流把两份各自合法的快照误当作合法迁移。
+- **修复前失败测试：** 完整假模型调度器中未修改、改名、新增、删除、依赖变化和错误目标字段 6 个子用例全部得到 `completed/approved`，期望 failed。
+- **最小根本修复：** required_changes 改为受限目标字段、资源名和必含术语；修订解析边界比较名称集合、类型、依赖边和除 revision 外的内容，并逐项验证目标字段。
+- **修复后证明：** 6 个非法迁移均失败；正确 API high_availability 目标含 `two instances` 的脚本化全流程通过；UI 仍显示人类可读 description。
+- **文档与代码差异：** 无；审计列出的改名、增删和忽略修改均可复现。
+- **剩余风险：** 本工具只输出设计文本；字段术语约束证明输出落实了审查要求，不等同于真实 Azure 部署或运行验证。

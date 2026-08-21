@@ -102,7 +102,7 @@ def render_review(review: ArchitectureReview) -> None:
                 st.write(finding.recommendation)
     if review.required_changes:
         st.markdown("**下一步必改项**")
-        _bullet_list(review.required_changes)
+        _bullet_list([change.description for change in review.required_changes])
 
 
 def render_result(result: ArchitectureRunResult) -> None:

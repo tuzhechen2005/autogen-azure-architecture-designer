@@ -57,10 +57,16 @@ Required JSON shape:
     "severity":"critical or high or medium or low",
     "category":"...","issue":"...","recommendation":"..."
   }],
-  "required_changes":["..."]
+  "required_changes":[{
+    "description":"...",
+    "target_field":"resource.high_availability or resource.sku or resource.region or resource.purpose or plan.high_availability_strategy or plan.security_strategy or plan.operations_strategy",
+    "resource_name":"existing resource name, or null for plan fields",
+    "required_terms":["exact concise term that must appear in the target field"]
+  }]
 }
 If decision is approved, findings and required_changes must both be [].
-If decision is revision_required, required_changes must contain at least one item.
+If decision is revision_required, required_changes must contain at least one
+machine-verifiable item for every mandatory correction.
 """
 
 
@@ -78,7 +84,12 @@ def build_revision_task(
     review: ArchitectureReview,
 ) -> str:
     required_changes = json.dumps(
-        review.required_changes[:3], ensure_ascii=False, separators=(",", ":")
+        [
+            change.model_dump(mode="json")
+            for change in review.required_changes
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
     return (
         f"Create revision {current_plan.revision + 1}. Apply every required change. "
