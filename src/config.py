@@ -38,7 +38,7 @@ class AppConfig:
     model_path: Path
     n_ctx: int = 4096
     max_tokens: int = 768
-    temperature: float = 0.1
+    temperature: float = 0.0
     n_gpu_layers: int = -1
     max_review_rounds: int = 2
     seed: int = 42
@@ -56,7 +56,7 @@ class AppConfig:
             model_path=model_path,
             n_ctx=_read_int("PHI3_N_CTX", 4096),
             max_tokens=_read_int("PHI3_MAX_TOKENS", 768),
-            temperature=_read_float("PHI3_TEMPERATURE", 0.1),
+            temperature=_read_float("PHI3_TEMPERATURE", 0.0),
             n_gpu_layers=_read_int("PHI3_N_GPU_LAYERS", -1),
             max_review_rounds=_read_int("ARCHITECTURE_MAX_REVIEW_ROUNDS", 2),
             seed=_read_int("PHI3_SEED", 42),

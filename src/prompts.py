@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from .output_parser import compact_json
 from .schemas import ArchitecturePlan, ArchitectureReview
 
@@ -13,6 +15,7 @@ Return one JSON object only. Do not use Markdown or add commentary.
 Use concise Chinese text for explanations and official Azure service names.
 Every depends_on value must match a resource name in the same plan.
 Design explicit availability-zone or regional redundancy where the requirement needs it.
+Keep the JSON compact: at most 6 resources and 4 items in each strategy list.
 
 Required JSON shape:
 {
@@ -39,6 +42,7 @@ Check single points of failure, availability zones/regions, data durability,
 failover, backups, monitoring, recovery objectives, and dependency consistency.
 Return one JSON object only. Do not use Markdown or add commentary.
 Use concise Chinese text. Approve only when no mandatory correction remains.
+Keep the JSON compact: report at most 3 highest-priority findings and changes.
 
 Required JSON shape:
 {
@@ -69,12 +73,18 @@ def build_revision_task(
     current_plan: ArchitecturePlan,
     review: ArchitectureReview,
 ) -> str:
+    required_changes = json.dumps(
+        review.required_changes[:3], ensure_ascii=False, separators=(",", ":")
+    )
     return (
         f"Create revision {current_plan.revision + 1}. Apply every required change. "
-        "Return a complete replacement plan, not a patch.\n"
+        "Return a complete compact replacement plan, not a patch. Preserve the "
+        "current resource names and resource count. Do not duplicate each resource "
+        "for a second region; express zone/region redundancy and failover inside "
+        "high_availability and high_availability_strategy.\n"
         f"USER_REQUIREMENT:\n{requirements.strip()}\n"
         f"CURRENT_PLAN_JSON:\n{compact_json(current_plan)}\n"
-        f"REVIEW_JSON:\n{compact_json(review)}"
+        f"REQUIRED_CHANGES_JSON:\n{required_changes}"
     )
 
 

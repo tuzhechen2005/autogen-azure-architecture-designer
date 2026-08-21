@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 
@@ -46,6 +47,29 @@ class ArchitecturePlan(StrictModel):
     operations_strategy: list[str] = Field(default_factory=list, max_length=16)
     cost_notes: list[str] = Field(default_factory=list, max_length=12)
 
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_scalar_strategy_items(cls, data: object) -> object:
+        """Preserve a scalar strategy value as a one-item list when necessary."""
+
+        if not isinstance(data, dict):
+            return data
+        list_fields = (
+            "assumptions",
+            "data_flow",
+            "high_availability_strategy",
+            "security_strategy",
+            "operations_strategy",
+            "cost_notes",
+        )
+        normalized = dict(data)
+        changed = False
+        for field_name in list_fields:
+            value = normalized.get(field_name)
+            if isinstance(value, str) and value.strip():
+                normalized[field_name] = [value]
+                changed = True
+        return normalized if changed else data
 
 class ReviewDecision(str, Enum):
     APPROVED = "approved"
@@ -73,6 +97,33 @@ class ArchitectureReview(StrictModel):
     findings: list[ReviewFinding] = Field(default_factory=list, max_length=16)
     required_changes: list[str] = Field(default_factory=list, max_length=12)
 
+    @model_validator(mode="before")
+    @classmethod
+    def derive_missing_required_changes(cls, data: object) -> object:
+        """Copy existing recommendations into the summary list when Phi-3 omits it."""
+
+        if not isinstance(data, dict):
+            return data
+        if data.get("decision") != ReviewDecision.REVISION_REQUIRED.value:
+            return data
+        if data.get("required_changes"):
+            return data
+        findings = data.get("findings")
+        if not isinstance(findings, list):
+            return data
+        recommendations = [
+            finding.get("recommendation")
+            for finding in findings
+            if isinstance(finding, dict)
+            and isinstance(finding.get("recommendation"), str)
+            and finding["recommendation"].strip()
+        ]
+        if not recommendations:
+            return data
+        normalized = dict(data)
+        normalized["required_changes"] = recommendations
+        return normalized
+
     @model_validator(mode="after")
     def decision_matches_required_changes(self) -> "ArchitectureReview":
         if self.decision is ReviewDecision.APPROVED and self.required_changes:
@@ -83,3 +134,53 @@ class ArchitectureReview(StrictModel):
         ):
             raise ValueError("revision_required reviews need at least one required change")
         return self
+
+
+class AgentRole(str, Enum):
+    PLANNER = "planner"
+    REVIEWER = "reviewer"
+
+
+class MessagePhase(str, Enum):
+    INITIAL_PLAN = "initial_plan"
+    REVIEW = "review"
+    REVISION = "revision"
+
+
+class TranscriptMessage(StrictModel):
+    """One visible agent message; no hidden chain-of-thought is requested or stored."""
+
+    sequence: int = Field(ge=1)
+    review_round: int = Field(ge=0, le=5)
+    role: AgentRole
+    phase: MessagePhase
+    raw_content: str = Field(min_length=1)
+    parsed_content: dict[str, object] | None = None
+    created_at: datetime
+
+
+class RunStatus(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TerminationReason(str, Enum):
+    APPROVED = "approved"
+    MAX_REVIEW_ROUNDS = "max_review_rounds"
+    ERROR = "error"
+
+
+class ArchitectureRunResult(StrictModel):
+    """Complete local output returned to Streamlit and optional trace storage."""
+
+    run_id: str = Field(min_length=8, max_length=80)
+    request: ArchitectureRequest
+    status: RunStatus
+    termination_reason: TerminationReason
+    final_plan: ArchitecturePlan | None = None
+    final_review: ArchitectureReview | None = None
+    messages: list[TranscriptMessage] = Field(default_factory=list)
+    review_rounds_completed: int = Field(ge=0, le=5)
+    started_at: datetime
+    finished_at: datetime
+    error: str | None = None

@@ -61,15 +61,41 @@ def parse_structured_output(raw: str, schema: type[SchemaT]) -> SchemaT:
     otherwise valid object. The object itself is never repaired or rewritten.
     """
 
-    value = extract_json_object(raw)
-    try:
-        return schema.model_validate(value)
-    except ValidationError as exc:
+    text = _strip_outer_fence(raw)
+    decoder = json.JSONDecoder()
+    valid: list[SchemaT] = []
+    validation_errors: list[ValidationError] = []
+    for position, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[position:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        try:
+            valid.append(schema.model_validate(value))
+        except ValidationError as exc:
+            validation_errors.append(exc)
+
+    if len(valid) == 1:
+        return valid[0]
+    if len(valid) > 1:
+        raise StructuredOutputError(
+            "model output contains multiple schema-valid JSON objects"
+        )
+    if validation_errors:
+        exc = validation_errors[0]
         details = "; ".join(
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
             for error in exc.errors(include_url=False)
         )
         raise StructuredOutputError(f"schema validation failed: {details}") from exc
+
+    # Preserve the most specific JSON syntax error from the first object.
+    extract_json_object(raw)
+    raise StructuredOutputError("model output contains no schema-valid JSON object")
 
 
 def compact_json(model: BaseModel) -> str:

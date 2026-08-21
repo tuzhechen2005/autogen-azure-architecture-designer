@@ -153,7 +153,7 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
             temperature=float(
                 extra_create_args.get("temperature", self._config.temperature)
             ),
-            top_p=float(extra_create_args.get("top_p", 0.9)),
+            top_p=float(extra_create_args.get("top_p", 1.0)),
             stop=extra_create_args.get("stop", ["<|end|>"]),
             seed=self._config.seed,
             echo=False,
