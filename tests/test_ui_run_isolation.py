@@ -32,6 +32,7 @@ class NewRunIsolationTests(unittest.TestCase):
             columns=Mock(return_value=[nullcontext(), nullcontext(), nullcontext()]),
             button=Mock(side_effect=[True, False]),
             error=Mock(),
+            code=Mock(),
         )
 
         with (
@@ -54,12 +55,17 @@ class NewRunIsolationTests(unittest.TestCase):
 
         self.assertIsNone(state.architecture_result)
         render_result.assert_not_called()
+        fake_streamlit.error.assert_called_once_with(
+            "无法开始本次运行。",
+            icon="⚠️",
+        )
 
     def test_result_identifies_its_run_and_original_requirements(self) -> None:
         fake_streamlit = SimpleNamespace(
             divider=Mock(),
             header=Mock(),
             caption=Mock(),
+            text=Mock(),
             expander=Mock(return_value=nullcontext()),
             code=Mock(),
             success=Mock(),
@@ -78,7 +84,7 @@ class NewRunIsolationTests(unittest.TestCase):
         with patch.object(ui, "st", fake_streamlit):
             ui.render_result(result)  # type: ignore[arg-type]
 
-        fake_streamlit.caption.assert_any_call("运行 ID：run-current")
+        fake_streamlit.text.assert_any_call("运行 ID：run-current")
         fake_streamlit.code.assert_called_once_with(
             "current requirements",
             language=None,

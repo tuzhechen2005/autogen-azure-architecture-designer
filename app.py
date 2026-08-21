@@ -129,7 +129,11 @@ def run_architecture(
             with live_messages:
                 render_transcript_message(event.message, show_raw=False)
         elif event.event_type is EventType.ERROR:
-            status_box.update(label=event.text, state="error", expanded=True)
+            status_box.update(
+                label="架构生成失败，请查看下方错误详情。",
+                state="error",
+                expanded=True,
+            )
         elif event.event_type is EventType.COMPLETED:
             status_box.update(
                 label="方案已生成，正在确认本次运行记录……",
@@ -195,15 +199,19 @@ def main() -> None:
             result = run_architecture(requirements, settings)
             st.session_state.architecture_result = result.model_dump()
         except (ConfigurationError, ValueError) as exc:
-            st.error(str(exc), icon="⚠️")
+            st.error("无法开始本次运行。", icon="⚠️")
+            st.code(str(exc), language=None)
         except Exception as exc:
-            st.error(f"本地运行失败：{type(exc).__name__}: {exc}", icon="⚠️")
+            st.error("本地运行失败。", icon="⚠️")
+            st.code(f"{type(exc).__name__}: {exc}", language=None)
 
     stored = st.session_state.architecture_result
     if stored is not None:
         result = ArchitectureRunResult.model_validate(stored)
         if result.status is RunStatus.FAILED:
-            st.error(result.error or "架构生成失败。")
+            st.error("架构生成失败。")
+            if result.error:
+                st.code(result.error, language=None)
         render_result(result)
 
 

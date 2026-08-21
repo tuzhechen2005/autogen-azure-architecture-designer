@@ -20,7 +20,7 @@ def _bullet_list(items: list[str], *, empty_text: str = "未提供") -> None:
         st.caption(empty_text)
         return
     for item in items:
-        st.markdown(f"- {item}")
+        st.text(f"• {item}")
 
 
 def render_transcript_message(
@@ -43,8 +43,9 @@ def render_transcript_message(
 
 
 def render_plan(plan: ArchitecturePlan) -> None:
-    st.subheader(plan.title)
-    st.write(plan.summary)
+    st.subheader("架构方案")
+    st.text(plan.title)
+    st.text(plan.summary)
     metric_a, metric_b, metric_c = st.columns(3)
     metric_a.metric("方案修订版本", plan.revision)
     metric_b.metric("Azure 资源数", len(plan.resources))
@@ -86,20 +87,23 @@ def render_plan(plan: ArchitecturePlan) -> None:
 def render_review(review: ArchitectureReview) -> None:
     st.subheader("审查结论")
     if review.decision is ReviewDecision.APPROVED:
-        st.success(review.summary, icon="✅")
+        st.success("审查通过", icon="✅")
     else:
-        st.warning(review.summary, icon="🛠️")
+        st.warning("需要修订", icon="🛠️")
+    st.text(review.summary)
 
     if review.strengths:
         st.markdown("**已确认的优点**")
         _bullet_list(review.strengths)
     if review.findings:
         st.markdown("**审查问题**")
-        for finding in review.findings:
+        for index, finding in enumerate(review.findings, start=1):
             with st.expander(
-                f"[{finding.severity.upper()}] {finding.category}: {finding.issue}"
+                f"审查问题 {index} · 严重度 {finding.severity.upper()}"
             ):
-                st.write(finding.recommendation)
+                st.text(f"类别：{finding.category}")
+                st.text(f"问题：{finding.issue}")
+                st.text(f"建议：{finding.recommendation}")
     if review.required_changes:
         st.markdown("**下一步必改项**")
         _bullet_list([change.description for change in review.required_changes])
@@ -108,7 +112,7 @@ def render_review(review: ArchitectureReview) -> None:
 def render_result(result: ArchitectureRunResult) -> None:
     st.divider()
     st.header("最终架构方案")
-    st.caption(f"运行 ID：{result.run_id}")
+    st.text(f"运行 ID：{result.run_id}")
     if result.request is not None:
         with st.expander("查看本结果对应的原始需求"):
             st.code(result.request.requirements, language=None)
