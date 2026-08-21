@@ -10,7 +10,7 @@
 | SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `app.py` | `6e7c703b7e5006ce1be3718500d2dbe7809f092a` | pushed | 真实 GGUF 峰值内存和原生并发行为需本地运行验证 |
 | SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | pushed | `tests/test_schemas.py`; `tests/test_output_parser.py` | `src/schemas.py`; `src/output_parser.py`; `app.py` | `bb8b8d9fca786638b1fe3ebe4ccd0d02d3a2286a` | pushed | 修订身份和必改项迁移约束由 SEC-06 处理 |
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | pushed | `tests/test_orchestrator_revision.py`; `scripts/orchestrator_smoke_test.py` | `src/orchestrator.py`; `src/schemas.py`; `src/prompts.py`; `src/ui.py` | `9236359c12bc6ad8d1936775ae0ba792f80295da` | pushed | 术语约束证明设计文本已包含要求，不证明真实 Azure 行为 |
-| SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | fixed-locally | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | pending | pending | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -110,3 +110,18 @@
 - **修复后证明：** 6 个非法迁移均失败；正确 API high_availability 目标含 `two instances` 的脚本化全流程通过；UI 仍显示人类可读 description。
 - **文档与代码差异：** 无；审计列出的改名、增删和忽略修改均可复现。
 - **剩余风险：** 本工具只输出设计文本；字段术语约束证明输出落实了审查要求，不等同于真实 Azure 部署或运行验证。
+
+## SEC-07 第一性原则记录
+
+- **资产：** 本机模型内存/算力、run 终态一致性和用户可理解的输入错误。
+- **不可信入口：** 空串、空白、换行、零宽格式字符、NUL 和其他控制字符。
+- **信任边界：** Streamlit 文本输入进入模型加载与 orchestrator 状态机。
+- **被破坏的不变量：** 无意义或非法输入不得加载模型、不得进入 running，并必须产生明确失败终态。
+- **最小失败路径：** 10 个零宽字符或 NUL 满足长度限制并进入模型；普通空白虽最终校验失败，但 UI 已先调用模型加载，orchestrator 又在 try 外抛出。
+- **当前代码为何允许：** 只依赖 strip/长度；没有 Unicode 类别策略；UI 和状态机的验证顺序晚于昂贵资源与异常边界。
+- **根本原因：** 输入有效性被当作字段长度问题，而不是资源准入与状态机前置条件。
+- **修复前失败测试：** 零宽/NUL/控制字符 3 个 Schema 子用例失败；调度器空白输入抛出非结构化异常，零宽/NUL 各调用模型 1 次；UI mock 证明先调用 load_local_model。
+- **最小根本修复：** NFKC 规范化；拒绝 Cc/Cf/Cs（仅允许换行、回车、制表符）和无可见字符；UI 在模型加载前构造 ArchitectureRequest；orchestrator 在 try 内验证并生成 request=None 的脱敏 failed 结果。
+- **修复后证明：** 空串、空格、换行、零宽、NUL 和混合控制字符均拒绝；模型/加载调用为 0；只产生一个 error 事件；可见多行输入正常通过；completed 结果禁止 request=None。
+- **文档与代码差异：** 无；问题和验证顺序均可复现。
+- **剩余风险：** 保守策略会拒绝含零宽连接符或双向格式控制的文本；用户可移除这些不可见字符后重试。

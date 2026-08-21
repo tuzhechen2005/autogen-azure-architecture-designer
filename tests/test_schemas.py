@@ -8,7 +8,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from src.schemas import ArchitecturePlan, ArchitectureReview
+from src.schemas import ArchitecturePlan, ArchitectureRequest, ArchitectureReview
 
 
 def valid_plan() -> dict[str, object]:
@@ -186,3 +186,26 @@ class ArchitecturePlanStrictnessTests(unittest.TestCase):
                     resources[0]["depends_on"] = ["database"]  # type: ignore[index]
                 with self.assertRaises(ValidationError):
                     ArchitecturePlan.model_validate(plan)
+
+
+class ArchitectureRequestValidationTests(unittest.TestCase):
+    def test_rejects_visual_whitespace_and_control_only_input(self) -> None:
+        invalid_values = (
+            "",
+            "          ",
+            "\n\n\n\n\n\n\n\n\n\n",
+            "\u200b" * 10,
+            "\x00" * 10,
+            "设计系统" + "\x01" * 6,
+        )
+        for value in invalid_values:
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValidationError):
+                    ArchitectureRequest(requirements=value)
+
+    def test_accepts_visible_multiline_input(self) -> None:
+        request = ArchitectureRequest(
+            requirements="设计高可用 API\n允许使用制表符\t描述容量要求"
+        )
+
+        self.assertIn("高可用 API", request.requirements)

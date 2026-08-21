@@ -11,7 +11,12 @@ import streamlit as st
 from src.config import AppConfig, ConfigurationError
 from src.local_model_client import LlamaCppChatCompletionClient
 from src.orchestrator import ArchitectureOrchestrator, CollaborationEvent, EventType
-from src.schemas import ArchitectureRunResult, RunStatus, TerminationReason
+from src.schemas import (
+    ArchitectureRequest,
+    ArchitectureRunResult,
+    RunStatus,
+    TerminationReason,
+)
 from src.trace_writer import append_trace
 from src.ui import render_result, render_transcript_message
 
@@ -100,6 +105,7 @@ def run_architecture(
     requirements: str,
     settings: dict[str, object],
 ) -> ArchitectureRunResult:
+    request = ArchitectureRequest(requirements=requirements)
     model_path = str(settings["model_path"]).strip()
     if not model_path:
         raise ConfigurationError("请先在侧边栏填写 Phi-3 GGUF 绝对路径。")
@@ -143,7 +149,7 @@ def run_architecture(
         max_review_rounds=int(settings["max_rounds"]),
         event_sink=on_event,
     )
-    result = asyncio.run(orchestrator.run(requirements))
+    result = asyncio.run(orchestrator.run(request.requirements))
     if bool(settings["save_trace"]):
         append_trace(result, Path("results/architecture_runs.jsonl"))
     return result

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -23,6 +24,23 @@ class ArchitectureRequest(StrictModel):
     """A user's local architecture-design request."""
 
     requirements: str = Field(min_length=10, max_length=6000)
+
+    @field_validator("requirements", mode="before")
+    @classmethod
+    def normalize_visible_requirements(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = unicodedata.normalize("NFKC", value)
+        allowed_controls = {"\n", "\r", "\t"}
+        for character in normalized:
+            if (
+                unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                and character not in allowed_controls
+            ):
+                raise ValueError("requirements contain disallowed control characters")
+        if not any(not character.isspace() for character in normalized):
+            raise ValueError("requirements must contain visible characters")
+        return normalized
 
 
 class AzureResource(StrictModel):
@@ -202,7 +220,7 @@ class ArchitectureRunResult(StrictModel):
     """Complete local output returned to Streamlit and optional trace storage."""
 
     run_id: str = Field(min_length=8, max_length=80)
-    request: ArchitectureRequest
+    request: ArchitectureRequest | None
     status: RunStatus
     termination_reason: TerminationReason
     final_plan: ArchitecturePlan | None = None
@@ -212,3 +230,9 @@ class ArchitectureRunResult(StrictModel):
     started_at: datetime
     finished_at: datetime
     error: str | None = None
+
+    @model_validator(mode="after")
+    def completed_run_has_request(self) -> "ArchitectureRunResult":
+        if self.status is RunStatus.COMPLETED and self.request is None:
+            raise ValueError("completed runs require a validated request")
+        return self

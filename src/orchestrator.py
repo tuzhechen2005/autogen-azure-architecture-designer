@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .agents import create_architecture_agents
 from .output_parser import StructuredOutputError, parse_structured_output
@@ -262,22 +262,22 @@ class ArchitectureOrchestrator:
     async def run(self, requirements: str) -> ArchitectureRunResult:
         """Run planning and review until approval or the configured round limit."""
 
-        request = ArchitectureRequest(requirements=requirements)
         run_id = uuid4().hex
         started_at = datetime.now(timezone.utc)
+        request: ArchitectureRequest | None = None
         transcript: list[TranscriptMessage] = []
         plan: ArchitecturePlan | None = None
         review: ArchitectureReview | None = None
         rounds_completed = 0
 
-        self._emit(
-            CollaborationEvent(
-                event_type=EventType.STATUS,
-                text="Planner is creating the initial architecture.",
-            )
-        )
-
         try:
+            request = ArchitectureRequest(requirements=requirements)
+            self._emit(
+                CollaborationEvent(
+                    event_type=EventType.STATUS,
+                    text="Planner is creating the initial architecture.",
+                )
+            )
             agents = create_architecture_agents(self._model_client)
             plan = await self._run_structured_agent(
                 agent=agents.planner,
@@ -381,6 +381,11 @@ class ArchitectureOrchestrator:
             )
             return result
         except Exception as exc:
+            error = (
+                "Invalid architecture requirements"
+                if request is None and isinstance(exc, ValidationError)
+                else f"{type(exc).__name__}: {exc}"
+            )
             result = self._build_result(
                 run_id=run_id,
                 request=request,
@@ -391,7 +396,7 @@ class ArchitectureOrchestrator:
                 transcript=transcript,
                 rounds_completed=rounds_completed,
                 started_at=started_at,
-                error=f"{type(exc).__name__}: {exc}",
+                error=error,
             )
             self._emit(
                 CollaborationEvent(
@@ -407,7 +412,7 @@ class ArchitectureOrchestrator:
     def _build_result(
         *,
         run_id: str,
-        request: ArchitectureRequest,
+        request: ArchitectureRequest | None,
         status: RunStatus,
         termination_reason: TerminationReason,
         plan: ArchitecturePlan | None,
