@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,18 @@ if TYPE_CHECKING:
 
 class LocalModelProtocolError(RuntimeError):
     """Raised when AutoGen asks the local text-only model for unsupported behavior."""
+
+
+_PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
+
+
+def _reject_phi3_protocol_tokens(content: str) -> None:
+    """Keep untrusted message text from creating Phi-3 protocol boundaries."""
+
+    if _PHI3_PROTOCOL_TOKEN.search(content):
+        raise LocalModelProtocolError(
+            "Message content contains a reserved Phi-3 protocol token"
+        )
 
 
 def _content_to_text(content: Any) -> str:
@@ -75,6 +88,7 @@ def _render_phi3_prompt(messages: Sequence[LLMMessage]) -> str:
             raise LocalModelProtocolError(
                 "Function results are not supported by the text-only Phi-3 protocol"
             )
+        _reject_phi3_protocol_tokens(item["content"])
         parts.append(f"<|{role}|>\n{item['content']}<|end|>\n")
     parts.append("<|assistant|>\n")
     return "".join(parts)
