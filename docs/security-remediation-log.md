@@ -18,7 +18,7 @@
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | pushed | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | `2579ac203366d1826b2a83672645dac9b717403f` | pushed | UI 只使用默认脱敏模式 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py` | `8218cdfd40a1c18d9e9e9f6c91a2a4593f86340f` | pushed | CPU/Metal 实际 offload 需真实 GGUF 验证 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | pushed | `tests/test_ui_safe_rendering.py`; `tests/test_ui_run_isolation.py` | `src/ui.py`; `app.py` | `ab8857ce083c1fc1b181dbbe517ab597fd5bd23d` | pushed | 页面级 CSP 由部署边界负责 |
-| SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | fixed-locally | `tests/test_dependency_lock.py`; clean venv `pytest` | `requirements.txt`; `requirements.lock`; `README.md`; `tests/test_local_model_client.py` | pending | pending | 待推送 |
+| SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | pushed | `tests/test_dependency_lock.py`; clean venv `pytest` | `requirements.txt`; `requirements.lock`; `README.md`; `tests/test_local_model_client.py` | `d8d8a7aae77600ded915448872f4dc254027d0c1` | pushed | Xcode SDK/编译器不属于 Python 锁 |
 | SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | confirmed | pending | pending | pending | pending | 待处理 |
 
 ## SEC-01 第一性原则记录
