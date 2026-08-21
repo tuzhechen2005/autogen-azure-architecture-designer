@@ -13,7 +13,7 @@
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | pushed | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | `805d0957c080fe53b4810a964a585f1f0e67b830` | pushed | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | pushed | `tests/test_config.py` | `src/config.py`; `app.py`; `.env.example`; `README.md` | `84ada63414d903492e73004ebd016dbcc8be2f4c` | pushed | 文件通过边界检查不保证 llama.cpp 能解析全部 GGUF 元数据 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | needs-real-runtime-validation | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | `3145e9b799922195d2872ec2564c5f5c9bd2766b` | pushed | 真实 GGUF 的底层 abort callback 仍需验证 |
-| SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | fixed-locally | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | pending | pending | 待推送 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -155,3 +155,18 @@
 - **修复后证明：** 三条原始回归通过；并发串行与截断拒绝相邻回归通过；新增完整 run 20ms deadline 用例在 500ms 内返回 failed；配置拒绝非正数和超过 600 秒的推理期限。
 - **文档与代码差异：** 无；修复前同步阻塞、仅前置取消和未使用 token 预算均稳定复现。
 - **验证限制：** 离线假模型证明 Python 层停止条件与终态映射；未加载真实 GGUF，需验证 llama.cpp 0.3.34 在 Metal/CPU 长生成中的 callback 延迟和原生资源回收。
+
+## SEC-10 第一性原则记录
+
+- **资产：** 当前请求与展示结果的身份绑定、用户对成功/失败终态的正确理解。
+- **不可信入口/故障：** 新需求、模型路径错误、配置异常、模型加载或推理异常。
+- **信任边界：** Streamlit 按钮触发的新尝试进入 session state，再由持久化 state 驱动结果页渲染。
+- **被破坏的不变量：** 新尝试开始后，上一 run 的成功结果不得继续作为当前请求的结果展示。
+- **最小失败路径：** session 已有旧成功结果；点击生成新需求；`run_architecture` 抛出 ConfigurationError；异常分支只显示错误而不覆盖旧 state；底部仍渲染旧绿色结果。
+- **当前代码为何允许：** `architecture_result` 只在成功返回时覆盖，开始与异常状态都没有使旧结果失效。
+- **根本原因：** session state 只建模“最近一次成功产物”，没有把点击生成视作会立即改变当前结果归属的状态转换。
+- **修复前失败测试：** `test_failed_new_attempt_does_not_render_previous_success` 观察到新运行失败后 state 仍为 `old-success`，且旧结果继续进入渲染路径。
+- **最小根本修复：** 处理 generate 事件时、进入任何可能失败的设置或推理前，原子清空当前展示结果；成功后只保存本 run 的完整结果。
+- **修复后证明：** 同一故障注入后 state 为 None 且 `render_result` 未调用；正常结果页额外显示不可混淆的 run ID，并以代码块展示结果对象内的原始需求。
+- **文档与代码差异：** 无；审计描述的异常分支可稳定复现。
+- **剩余风险：** 当前实现不保留历史结果列表；这是刻意的安全默认值，需历史功能时应使用与当前结果分离且显式标注的视图。

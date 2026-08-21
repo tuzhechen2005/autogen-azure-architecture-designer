@@ -179,6 +179,10 @@ def main() -> None:
     if clear:
         st.session_state.architecture_result = None
     if generate:
+        # A new attempt immediately invalidates the previously displayed result.
+        # If setup or inference fails, the old success must not look like the
+        # answer to the new requirements.
+        st.session_state.architecture_result = None
         try:
             result = run_architecture(requirements, settings)
             st.session_state.architecture_result = result.model_dump()

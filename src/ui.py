@@ -108,6 +108,10 @@ def render_review(review: ArchitectureReview) -> None:
 def render_result(result: ArchitectureRunResult) -> None:
     st.divider()
     st.header("最终架构方案")
+    st.caption(f"运行 ID：{result.run_id}")
+    if result.request is not None:
+        with st.expander("查看本结果对应的原始需求"):
+            st.code(result.request.requirements, language=None)
     if result.termination_reason is TerminationReason.APPROVED:
         st.success(
             f"审查已通过，共完成 {result.review_rounds_completed} 轮审查。",
