@@ -15,7 +15,7 @@
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | needs-real-runtime-validation | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | `3145e9b799922195d2872ec2564c5f5c9bd2766b` | pushed | 真实 GGUF 的底层 abort callback 仍需验证 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | pushed | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | `5b6296fa35b21fa82aa11a92668f1c4e7a605041` | pushed | 不保留历史结果列表，避免默认混淆 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | pushed | `tests/test_trace_terminal_state.py` | `app.py` | `413c6ba7932d2cb793738cd3f7ea072193e42539` | pushed | trace 文件本身安全属性由 SEC-12 处理 |
-| SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | fixed-locally | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | pending | pending | 待推送 |
+| SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | pushed | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | `2579ac203366d1826b2a83672645dac9b717403f` | pushed | UI 只使用默认脱敏模式 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | confirmed | pending | pending | pending | pending | 待处理 |
