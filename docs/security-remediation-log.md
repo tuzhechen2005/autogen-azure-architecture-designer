@@ -19,7 +19,7 @@
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py` | `8218cdfd40a1c18d9e9e9f6c91a2a4593f86340f` | pushed | CPU/Metal 实际 offload 需真实 GGUF 验证 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | pushed | `tests/test_ui_safe_rendering.py`; `tests/test_ui_run_isolation.py` | `src/ui.py`; `app.py` | `ab8857ce083c1fc1b181dbbe517ab597fd5bd23d` | pushed | 页面级 CSP 由部署边界负责 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | pushed | `tests/test_dependency_lock.py`; clean venv `pytest` | `requirements.txt`; `requirements.lock`; `README.md`; `tests/test_local_model_client.py` | `d8d8a7aae77600ded915448872f4dc254027d0c1` | pushed | Xcode SDK/编译器不属于 Python 锁 |
-| SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-16 | 朴素 ZIP 会包含 Git 忽略的敏感文件 | P3 | 敏感文件不得进入最终交付物 | fixed-locally | `tests/test_release_archive.py`; final archive inspection | `scripts/build_release.py`; `README.md`; `DEVELOPMENT_ROADMAP.md` | pending | pending | 提交后生成最终 ZIP |
 
 ## SEC-01 第一性原则记录
 
@@ -245,3 +245,18 @@
 - **修复后证明：** 锁结构测试验证 20+ 包全部 `==` 且带 SHA-256，并点名关键传递依赖；全新 macOS arm64 venv 从锁完成 Metal 源码构建、52 项 pytest 和 `pip check`；当前环境同样 52 项通过。
 - **文档与代码差异：** 审计点名的传递依赖全部出现在锁中；此外补齐 pytest、iniconfig、pluggy、pygments 等测试链。
 - **剩余风险：** PyPI sdist 的隔离构建依赖由 PEP 517 引导安装，源码本身受锁内 hash 保护但编译器/Xcode SDK 不在 Python 锁内；README 固定已验证的 macOS/CPython 与 CMake 参数，跨 OS 需另建平台锁并验证。
+
+## SEC-16 第一性原则记录
+
+- **资产：** 最终源码交付物中的源码、文档和公开配置，以及开发机身份、路径、凭证、模型、trace 和历史临时内容。
+- **不可信入口/状态：** Git 忽略的 `.venv`、cache、`.env`、swap、运行记录、GGUF、已有 ZIP，以及 tracked tree 中误加入的敏感文件或 symlink。
+- **信任边界：** 含大量本地状态的工作目录进入可分享 ZIP，再离开开发机边界。
+- **被破坏的不变量：** 发布包只能包含已提交且通过策略验证的普通文件；Git ignore 不能被当作归档过滤器；包内内容必须等于 `HEAD` blob。
+- **最小失败路径：** 当前工作树存在 `.venv`、cache 和 `src/.config.py.swp`；执行 `zip -r` 会遍历这些 ignored 文件并把用户名、绝对路径、旧源码或环境内容带入包。
+- **当前流程为何允许：** 路线图只要求最终 ZIP，没有可执行 allowlist、clean-tree 前置条件、路径/内容拒绝规则或构建后清单验证。
+- **根本原因：** 把开发工作区视为发布源，而不是把不可变的已审查 Git tree 视为唯一发布源。
+- **修复前失败测试：** `test_release_builder_exists` 因脚本缺失失败；现场检查确认 ignored 的 `.venv`、多个 cache 和 `src/.config.py.swp` 实际存在。
+- **最小根本修复：** 使用 `git archive HEAD`；构建前拒绝未提交 tracked 修改；验证所有 tree entry 为普通文件并应用敏感路径/内容/大小策略；原子、排他发布 ZIP；重新读取 ZIP 并逐项与 Git blob 比较后输出 SHA-256。
+- **修复后证明：** 临时 Git 仓库测试证明 ignored `.env`/swap/`.venv` 不入包，dirty tracked tree、force-tracked `.env` 和 symlink 均被拒绝；最终仓库包在提交后执行同一清单与内容验证。
+- **文档与代码差异：** 审计点名的 swap `src/.config.py.swp` 仍在本机但保持 ignored；无需删除即可证明不会进入 allowlist ZIP。
+- **剩余风险：** 内容扫描使用高信号模式而非通用 secret scanner；最终安全性还依赖代码评审不把未知格式秘密伪装为普通源码。发布脚本同时限制单文件与总解压大小，并拒绝覆盖既有归档。

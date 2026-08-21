@@ -125,6 +125,19 @@ CPU 回退：
 PHI3_N_GPU_LAYERS=0 python scripts/smoke_test.py
 ```
 
+## 构建安全源码 ZIP
+
+先提交所有 tracked 修改，再从 Git `HEAD` 的 allowlist 构建发布包：
+
+```bash
+python scripts/build_release.py
+```
+
+脚本默认输出 `dist/autogen-azure-architecture-designer-<commit>.zip`，同时打印文件数、
+字节数和 SHA-256。它不会遍历工作目录：`.venv`、`.env`、GGUF、cache、trace、swap、
+已有 ZIP 和 `.git` 即使实际存在也不会进入包；tracked 敏感路径、符号链接、敏感内容模式、
+未提交的 tracked 修改或归档清单不一致都会让构建安全失败。
+
 ## 目录结构
 
 ```text
