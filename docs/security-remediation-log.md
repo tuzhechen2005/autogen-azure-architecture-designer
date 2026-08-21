@@ -4,7 +4,7 @@
 
 | ID | 标题 | 风险 | 被破坏的不变量 | 状态 | 失败测试 | 修复文件 | Commit | Push | 剩余风险 |
 |---|---|---|---|---|---|---|---|---|---|
-| SEC-01 | Phi-3 保留 token 可突破用户角色边界 | P1 | 用户输入不能改变消息角色边界 | fixed-locally | `tests/test_local_model_client.py` | `src/local_model_client.py`; `src/prompts.py` | pending | pending | 普通自然语言注入的服从率需真实模型验证；协议边界已由代码拒绝 |
+| SEC-01 | Phi-3 保留 token 可突破用户角色边界 | P1 | 用户输入不能改变消息角色边界 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `src/prompts.py` | `8df755621e83ada0ffa195123a921d3366e3ed97` | pushed | 普通自然语言注入的服从率需真实模型验证；协议边界已由代码拒绝 |
 | SEC-02 | 矛盾审查仍被标记为通过 | P1 | 任何未解决 finding 都不能 approved | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-03 | JSON 扫描器接受非唯一、非完整顶层对象 | P1 | 歧义、截断和重复键输出不得静默接受 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | confirmed | pending | pending | pending | pending | 待处理 |
