@@ -14,7 +14,7 @@
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | pushed | `tests/test_config.py` | `src/config.py`; `app.py`; `.env.example`; `README.md` | `84ada63414d903492e73004ebd016dbcc8be2f4c` | pushed | 文件通过边界检查不保证 llama.cpp 能解析全部 GGUF 元数据 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | needs-real-runtime-validation | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | `3145e9b799922195d2872ec2564c5f5c9bd2766b` | pushed | 真实 GGUF 的底层 abort callback 仍需验证 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | pushed | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | `5b6296fa35b21fa82aa11a92668f1c4e7a605041` | pushed | 不保留历史结果列表，避免默认混淆 |
-| SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | fixed-locally | `tests/test_trace_terminal_state.py` | `app.py` | pending | pending | 待推送 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -170,3 +170,18 @@
 - **修复后证明：** 同一故障注入后 state 为 None 且 `render_result` 未调用；正常结果页额外显示不可混淆的 run ID，并以代码块展示结果对象内的原始需求。
 - **文档与代码差异：** 无；审计描述的异常分支可稳定复现。
 - **剩余风险：** 当前实现不保留历史结果列表；这是刻意的安全默认值，需历史功能时应使用与当前结果分离且显式标注的视图。
+
+## SEC-11 第一性原则记录
+
+- **资产：** 已生成方案、Session State 可用结果，以及 UI 单一且有序的终态。
+- **故障入口：** 磁盘满、权限错误、目录不可用、序列化或 fsync 失败。
+- **信任边界：** orchestrator 的计算成功结果进入可选本地 trace 副作用，再进入页面持久状态。
+- **被破坏的不变量：** 可选审计记录失败不得把有效计算结果变成失败；完成终态只能在所有影响终态展示的后处理完成后发出。
+- **最小失败路径：** orchestrator 先发 COMPLETED，status 变绿；`append_trace` 随后抛 OSError；`run_architecture` 不返回结果，main 只显示失败且无法写入 Session State。
+- **当前代码为何允许：** UI 直接把 orchestrator 的内部完成事件当作页面最终提交，同时 trace 异常与核心计算异常共用外层失败路径。
+- **根本原因：** 计算完成、可选持久化和页面状态提交没有明确的提交顺序与故障隔离边界。
+- **修复前失败测试：** 注入 `append_trace` 磁盘满错误后，timeline 为 complete→trace，随后 OSError 逃逸，期望的有效结果无法返回。
+- **最小根本修复：** COMPLETED 事件只把 UI 置于“正在确认记录”的 running 状态；trace 独立 try/except；无论 trace 成败都返回有效结果；最后才把已完成 run 提交为绿色终态。
+- **修复后证明：** 同一故障注入得到 running→trace→warning→complete；返回对象与计算结果相同，warning 明确说明只有记录失败，Session State 上层可继续保存结果。
+- **文档与代码差异：** 无；原先完成事件、trace 和 state 保存的顺序与审计一致。
+- **剩余风险：** 本项只修复终态排序与故障隔离；trace 文件权限、链接、并发和隐私属于 SEC-12。

@@ -131,18 +131,9 @@ def run_architecture(
         elif event.event_type is EventType.ERROR:
             status_box.update(label=event.text, state="error", expanded=True)
         elif event.event_type is EventType.COMPLETED:
-            approved = (
-                event.result is not None
-                and event.result.termination_reason is TerminationReason.APPROVED
-            )
             status_box.update(
-                label=(
-                    "审查通过，架构方案已完成。"
-                    if approved
-                    else "已达到轮次上限，返回最新方案和未解决意见。"
-                ),
-                state="complete",
-                expanded=False,
+                label="方案已生成，正在确认本次运行记录……",
+                state="running",
             )
 
     orchestrator = ArchitectureOrchestrator(
@@ -152,7 +143,24 @@ def run_architecture(
     )
     result = asyncio.run(orchestrator.run(request.requirements))
     if bool(settings["save_trace"]):
-        append_trace(result, Path("results/architecture_runs.jsonl"))
+        try:
+            append_trace(result, Path("results/architecture_runs.jsonl"))
+        except Exception:
+            st.warning(
+                "方案已生成，但本地运行记录保存失败；当前方案仍可正常查看。",
+                icon="⚠️",
+            )
+    if result.status is RunStatus.COMPLETED:
+        approved = result.termination_reason is TerminationReason.APPROVED
+        status_box.update(
+            label=(
+                "审查通过，架构方案已完成。"
+                if approved
+                else "已达到轮次上限，返回最新方案和未解决意见。"
+            ),
+            state="complete",
+            expanded=False,
+        )
     return result
 
 
