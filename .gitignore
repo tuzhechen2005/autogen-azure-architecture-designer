@@ -1,0 +1,49 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local model weights
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# Runtime output
+results/*.json
+results/*.jsonl
+results/*.log
+results/*.md
+!results/README.md
+
+# Streamlit local settings
+.streamlit/secrets.toml
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+*.zip
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
