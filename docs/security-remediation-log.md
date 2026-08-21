@@ -13,7 +13,7 @@
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | pushed | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | `805d0957c080fe53b4810a964a585f1f0e67b830` | pushed | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | pushed | `tests/test_config.py` | `src/config.py`; `app.py`; `.env.example`; `README.md` | `84ada63414d903492e73004ebd016dbcc8be2f4c` | pushed | 文件通过边界检查不保证 llama.cpp 能解析全部 GGUF 元数据 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | needs-real-runtime-validation | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | `3145e9b799922195d2872ec2564c5f5c9bd2766b` | pushed | 真实 GGUF 的底层 abort callback 仍需验证 |
-| SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | fixed-locally | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | pending | pending | 待推送 |
+| SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | pushed | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | `5b6296fa35b21fa82aa11a92668f1c4e7a605041` | pushed | 不保留历史结果列表，避免默认混淆 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
