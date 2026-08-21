@@ -11,7 +11,7 @@
 - 调度器显式传递已校验的方案与审查 JSON，完成有限轮次的“规划—审查—修订—再审”闭环。
 - 输出使用 Pydantic 校验，错误格式只进行有限纠正，不导致无限对话。
 - Streamlit 按智能体步骤更新进度，展示资源表、架构策略、审查问题和全部角色消息。
-- 可选将完整运行写入本地 JSONL，默认不纳入 Git。
+- 可选将脱敏运行元数据写入每个 run 独立的本地 JSON，默认不纳入 Git。
 
 ## 协作流程
 
@@ -135,7 +135,7 @@ PHI3_N_GPU_LAYERS=0 python scripts/smoke_test.py
 │   ├── output_parser.py           JSON 候选提取与校验
 │   ├── agents.py                  两个独立 AutoGen 角色
 │   ├── orchestrator.py            多轮协作、事件与终止
-│   ├── trace_writer.py            本地 JSONL 记录
+│   ├── trace_writer.py            私有、原子发布的逐 run JSON 记录
 │   └── ui.py                      Streamlit 渲染函数
 ├── scripts/                       最小冒烟与协议验证
 ├── examples/                      可复用需求示例

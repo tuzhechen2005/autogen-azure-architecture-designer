@@ -22,7 +22,7 @@
 
 - 实现规划、审查、修订和再审的显式上下文传递。
 - 实现审查通过、最大轮次和错误三类终止路径。
-- 实现事件回调、消息记录和可选 JSONL trace。
+- 实现事件回调、消息记录和可选的逐 run 脱敏 JSON trace。
 
 证据：`scripts/orchestrator_smoke_test.py` 及其 `--real` 路径。
 

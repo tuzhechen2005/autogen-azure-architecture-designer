@@ -61,7 +61,7 @@ class TraceTerminalStateTests(unittest.TestCase):
             patch.object(app, "st", fake_streamlit),
             patch.object(app, "load_local_model", return_value=object()),
             patch.object(app, "ArchitectureOrchestrator", CompletingOrchestrator),
-            patch.object(app, "append_trace", side_effect=fail_trace),
+            patch.object(app, "save_trace", side_effect=fail_trace),
         ):
             actual_result = app.run_architecture(
                 "Design a small highly available Azure API.",

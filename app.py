@@ -17,7 +17,7 @@ from src.schemas import (
     RunStatus,
     TerminationReason,
 )
-from src.trace_writer import append_trace
+from src.trace_writer import save_trace
 from src.ui import render_result, render_transcript_message
 
 
@@ -88,7 +88,7 @@ def render_sidebar() -> dict[str, object]:
             options=("Apple Metal", "CPU"),
             horizontal=True,
         )
-        save_trace = st.checkbox("保存本地 JSONL 运行记录", value=False)
+        save_trace_enabled = st.checkbox("保存脱敏的本地运行记录", value=False)
         st.divider()
         st.caption(
             "本地模型会占用约 3–5 GiB 内存。首次生成前才会加载。"
@@ -98,7 +98,7 @@ def render_sidebar() -> dict[str, object]:
         "max_rounds": max_rounds,
         "max_tokens": max_tokens,
         "n_gpu_layers": -1 if backend == "Apple Metal" else 0,
-        "save_trace": save_trace,
+        "save_trace": save_trace_enabled,
     }
 
 
@@ -144,7 +144,7 @@ def run_architecture(
     result = asyncio.run(orchestrator.run(request.requirements))
     if bool(settings["save_trace"]):
         try:
-            append_trace(result, Path("results/architecture_runs.jsonl"))
+            save_trace(result, Path("results/architecture_runs"))
         except Exception:
             st.warning(
                 "方案已生成，但本地运行记录保存失败；当前方案仍可正常查看。",

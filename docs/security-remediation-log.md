@@ -15,7 +15,7 @@
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | needs-real-runtime-validation | `tests/test_local_model_client.py`; `tests/test_input_validation.py`; `tests/test_config.py` | `src/local_model_client.py`; `src/orchestrator.py`; `src/config.py`; `.env.example`; `README.md` | `3145e9b799922195d2872ec2564c5f5c9bd2766b` | pushed | 真实 GGUF 的底层 abort callback 仍需验证 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | pushed | `tests/test_ui_run_isolation.py` | `app.py`; `src/ui.py` | `5b6296fa35b21fa82aa11a92668f1c4e7a605041` | pushed | 不保留历史结果列表，避免默认混淆 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | pushed | `tests/test_trace_terminal_state.py` | `app.py` | `413c6ba7932d2cb793738cd3f7ea072193e42539` | pushed | trace 文件本身安全属性由 SEC-12 处理 |
-| SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-12 | trace 文件隐私、并发和链接安全问题 | P2 | trace 不泄露、不混写、不跟随链接且可恢复 | fixed-locally | `tests/test_trace_writer.py`; `tests/test_trace_terminal_state.py` | `src/trace_writer.py`; `app.py`; `.gitignore`; `README.md`; `docs/architecture.md` | pending | pending | 待推送 |
 | SEC-13 | CPU 回退永久污染进程环境 | P2 | 后端配置不得跨运行或会话污染 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-14 | 模型文本经 Markdown 渲染可触发外部请求 | P2 | 模型输出不得触发外部请求 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-15 | 依赖未完整锁定 | P3 | 干净环境安装必须可复现 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -185,3 +185,18 @@
 - **修复后证明：** 同一故障注入得到 running→trace→warning→complete；返回对象与计算结果相同，warning 明确说明只有记录失败，Session State 上层可继续保存结果。
 - **文档与代码差异：** 无；原先完成事件、trace 和 state 保存的顺序与审计一致。
 - **剩余风险：** 本项只修复终态排序与故障隔离；trace 文件权限、链接、并发和隐私属于 SEC-12。
+
+## SEC-12 第一性原则记录
+
+- **资产：** 用户需求与模型文本的机密性、run 归属、trace 完整性及本机非目标文件。
+- **不可信入口/故障：** 模型与用户敏感文本、输出路径中的 symlink、宽松 umask、并发会话、进程或磁盘中途失败。
+- **信任边界：** 已验证运行结果进入本机文件系统命名空间，之后可能被同机用户、其他会话或故障恢复流程读取。
+- **被破坏的不变量：** 默认记录不得包含敏感正文；目录/文件必须仅属当前用户；不得跟随链接或覆盖既有 run；可见文件必须是完整 JSON。
+- **最小失败路径：** umask=000 时旧目录/文件成为 0777/0666；输出文件为 symlink 时追加内容进入攻击者指定目标；所有会话共享一个可产生半行的 JSONL。
+- **当前代码为何允许：** `Path.mkdir` 与文本追加完全继承 umask、默认跟随链接、没有锁/事务边界，并序列化完整 result。
+- **根本原因：** 把敏感审计记录当作普通日志追加，没有定义私有存储、命名、最小披露和原子发布协议。
+- **修复前失败测试：** 宽松 umask 下权限断言观测 0777 而非 0700，trace 含两类 secret；symlink 用例未抛异常并修改目标文件。
+- **最小根本修复：** 逐目录用 dir-fd、`O_DIRECTORY|O_NOFOLLOW` 安全打开并固定最终目录 0700；每个 run 独立 JSON；临时文件 0600 完整写入并 fsync 后用排他 hard-link 原子发布；默认只保留脱敏运行元数据。
+- **修复后证明：** 权限、默认脱敏、目录 symlink 拒绝、12 个并发 run 独立完整 JSON、部分写故障不发布 final 且清理 temp 五条回归全部通过。
+- **文档与代码差异：** 审计称默认 0644；在受控 umask=000 下风险更严重为 0666，说明问题成立且影响上界更高。
+- **剩余风险：** `include_sensitive_content=True` 是仅供显式调用的高风险选项；UI 不启用它。安全目录遍历要求路径各组件不是 symlink，非 POSIX/缺少 `O_NOFOLLOW` 的平台会安全拒绝。

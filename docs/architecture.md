@@ -10,7 +10,7 @@
 | ReviewerAgent | 检查高可用性并返回决策和必改项 | 不部署资源，不直接重写方案 |
 | Local model client | 将 AutoGen 消息渲染为 Phi-3 instruct 协议并本地推理 | 不提供云端降级路径 |
 | Parser/Schemas | 提取完整 JSON 候选并验证结构 | 不创造 Azure 资源或改写建议 |
-| Trace writer | 可选追加本地 JSONL 记录 | 不上传、不覆盖旧记录 |
+| Trace writer | 可选保存默认脱敏的逐 run JSON | `0700/0600`、拒绝链接、原子发布、不上传 |
 
 ## 运行序列
 
@@ -70,7 +70,7 @@ sequenceDiagram
   → 本机 GGUF 文件
   → 进程内结构校验
   → Streamlit Session State
-  → 可选本地 results/*.jsonl
+  → 可选本地 results/architecture_runs/<run_id>.json（默认脱敏）
 ```
 
 源码中没有 Azure 凭证、Azure SDK 部署调用或云端 LLM 客户端。
