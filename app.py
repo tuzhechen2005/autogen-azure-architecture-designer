@@ -8,7 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.config import AppConfig, ConfigurationError
+from src.config import AppConfig, ConfigurationError, trusted_model_root_from_env
 from src.local_model_client import LlamaCppChatCompletionClient
 from src.orchestrator import ArchitectureOrchestrator, CollaborationEvent, EventType
 from src.schemas import (
@@ -50,6 +50,7 @@ def load_local_model(
 
     config = AppConfig(
         model_path=Path(model_path).expanduser(),
+        model_root=trusted_model_root_from_env(),
         n_ctx=n_ctx,
         max_tokens=max_tokens,
         temperature=temperature,

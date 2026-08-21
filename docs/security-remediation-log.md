@@ -11,7 +11,7 @@
 | SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | pushed | `tests/test_schemas.py`; `tests/test_output_parser.py` | `src/schemas.py`; `src/output_parser.py`; `app.py` | `bb8b8d9fca786638b1fe3ebe4ccd0d02d3a2286a` | pushed | 修订身份和必改项迁移约束由 SEC-06 处理 |
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | pushed | `tests/test_orchestrator_revision.py`; `scripts/orchestrator_smoke_test.py` | `src/orchestrator.py`; `src/schemas.py`; `src/prompts.py`; `src/ui.py` | `9236359c12bc6ad8d1936775ae0ba792f80295da` | pushed | 术语约束证明设计文本已包含要求，不证明真实 Azure 行为 |
 | SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | pushed | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | `805d0957c080fe53b4810a964a585f1f0e67b830` | pushed | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
-| SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | confirmed | pending | pending | pending | pending | 待处理 |
+| SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | fixed-locally | `tests/test_config.py` | `src/config.py`; `app.py`; `.env.example`; `README.md` | pending | pending | 文件通过边界检查不保证 llama.cpp 能解析全部 GGUF 元数据 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-11 | trace 失败与 UI 完成终态矛盾 | P2 | 每个 run 只有一个明确终态 | confirmed | pending | pending | pending | pending | 待处理 |
@@ -125,3 +125,18 @@
 - **修复后证明：** 空串、空格、换行、零宽、NUL 和混合控制字符均拒绝；模型/加载调用为 0；只产生一个 error 事件；可见多行输入正常通过；completed 结果禁止 request=None。
 - **文档与代码差异：** 无；问题和验证顺序均可复现。
 - **剩余风险：** 保守策略会拒绝含零宽连接符或双向格式控制的文本；用户可移除这些不可见字符后重试。
+
+## SEC-08 第一性原则记录
+
+- **资产：** 本机文件系统机密、模型内存预算、runtime 缓存身份和 llama.cpp 稳定性。
+- **不可信入口：** UI/环境传入的路径、扩展名、symlink、文件内容与大小。
+- **信任边界：** 字符串路径进入文件系统解析、原生 GGUF 加载和进程级 runtime 注册表。
+- **被破坏的不变量：** 只允许受信根目录内、绝对、非 symlink、常规且具备合理大小和 GGUF magic 的文件。
+- **最小失败路径：** 指向任意可读文本的相对路径、`.txt`、`.gguf` symlink、错误 magic 或 4 字节伪文件；旧代码只调用 is_file。
+- **当前代码为何允许：** 未规范化身份、未限制根目录、未验证后缀/类型/header/大小，也未用 no-follow 打开。
+- **根本原因：** 把“文件存在”误当作“允许且可安全交给原生解析器的模型”。
+- **修复前失败测试：** 相对、非 GGUF、symlink、错误 magic 与 tiny 共 5 类失败；目录和缺失路径为既有正向控制。
+- **最小根本修复：** 以 `PHI3_MODEL_ROOT` 作为操作员信任边界；strict resolve 与根目录 containment；拒绝最终 symlink；`O_NOFOLLOW` 打开并用 fstat 验证 regular file、1 MiB–64 GiB 和 `GGUF` magic；错误不回显路径。
+- **修复后证明：** 7 项测试覆盖所有拒绝路径、根外有效文件、路径脱敏与根内有效临时 GGUF；runtime 仍以 resolved 路径作为唯一身份。
+- **文档与代码差异：** 无；审计描述可稳定复现。
+- **剩余风险：** 4 字节 magic 和大小边界不能证明完整 GGUF 元数据正确；最终解析仍由本地 llama.cpp 完成并可安全报错。

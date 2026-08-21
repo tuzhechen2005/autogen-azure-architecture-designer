@@ -77,9 +77,11 @@ hf download microsoft/Phi-3-mini-4k-instruct-gguf \
 
 ```bash
 export PHI3_MODEL_PATH="/absolute/path/to/Phi-3-mini-4k-instruct-q4.gguf"
+export PHI3_MODEL_ROOT="/absolute/path/to"
 ```
 
-也可在 Streamlit 侧边栏直接输入路径。不要将 GGUF 加入 Git。
+也可在 Streamlit 侧边栏输入 `PHI3_MODEL_ROOT` 目录内的绝对路径。模型必须是
+该目录内非符号链接的常规 `.gguf` 文件，并包含有效 GGUF 文件头。不要将 GGUF 加入 Git。
 
 ## 运行 Web 应用
 
