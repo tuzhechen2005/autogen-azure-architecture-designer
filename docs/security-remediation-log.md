@@ -10,7 +10,7 @@
 | SEC-04 | 全局无界模型缓存导致 OOM 与并发访问 | P1 | 缓存有界且同一可变模型 context 不并发 | needs-real-runtime-validation | `tests/test_local_model_client.py` | `src/local_model_client.py`; `app.py` | `6e7c703b7e5006ce1be3718500d2dbe7809f092a` | pushed | 真实 GGUF 峰值内存和原生并发行为需本地运行验证 |
 | SEC-05 | Schema 校验不严格且不验证依赖图 | P2 | 格式合法不等于架构正确 | pushed | `tests/test_schemas.py`; `tests/test_output_parser.py` | `src/schemas.py`; `src/output_parser.py`; `app.py` | `bb8b8d9fca786638b1fe3ebe4ccd0d02d3a2286a` | pushed | 修订身份和必改项迁移约束由 SEC-06 处理 |
 | SEC-06 | 修订阶段没有强制状态迁移约束 | P2 | 修订不得静默改变资源身份或忽略必改项 | pushed | `tests/test_orchestrator_revision.py`; `scripts/orchestrator_smoke_test.py` | `src/orchestrator.py`; `src/schemas.py`; `src/prompts.py`; `src/ui.py` | `9236359c12bc6ad8d1936775ae0ba792f80295da` | pushed | 术语约束证明设计文本已包含要求，不证明真实 Azure 行为 |
-| SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | fixed-locally | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | pending | pending | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
+| SEC-07 | 视觉空输入/控制字符通过校验且校验过晚 | P2 | 无效输入不得触发昂贵模型加载 | pushed | `tests/test_schemas.py`; `tests/test_input_validation.py` | `src/schemas.py`; `src/orchestrator.py`; `app.py` | `805d0957c080fe53b4810a964a585f1f0e67b830` | pushed | Unicode 控制字符策略保守拒绝 Cc/Cf/Cs（换行、回车、制表符除外） |
 | SEC-08 | 模型路径校验不足 | P2 | 非 GGUF、相对路径、目录和 symlink 必须拒绝 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-09 | 推理无超时、生成期取消和上下文预算预检 | P2 | 推理、等待与重试必须有界 | confirmed | pending | pending | pending | pending | 待处理 |
 | SEC-10 | 新运行失败后仍展示旧成功结果 | P2 | 新任务失败不能展示旧任务结果 | confirmed | pending | pending | pending | pending | 待处理 |
