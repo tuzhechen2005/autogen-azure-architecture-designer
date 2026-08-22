@@ -149,6 +149,15 @@ class LlamaCppModelRuntime:
         if self._closed:
             raise LocalModelProtocolError("Local model runtime is closed")
 
+    def _acquire_lock(self, should_abort: Callable[[], bool] | None) -> None:
+        """Acquire the mutable-context lock while permitting queued cancellation."""
+
+        while True:
+            if should_abort is not None and should_abort():
+                raise _LocalModelOperationAborted()
+            if self._lock.acquire(timeout=0.005):
+                return
+
     def generate(
         self,
         prompt: str,
@@ -156,7 +165,8 @@ class LlamaCppModelRuntime:
         should_abort: Callable[[], bool] | None = None,
         **kwargs: object,
     ) -> dict[str, object]:
-        with self._lock:
+        self._acquire_lock(should_abort)
+        try:
             self._ensure_open()
             self._model.reset()
             abort_callback: object | None = None
@@ -191,15 +201,22 @@ class LlamaCppModelRuntime:
                     )
                 # Keep the ctypes callback alive until after native generation ends.
                 _ = abort_callback
+        finally:
+            self._lock.release()
 
-    def count_tokens(self, prompt: str) -> int:
-        with self._lock:
+    def count_tokens(
+        self, prompt: str, *, should_abort: Callable[[], bool] | None = None
+    ) -> int:
+        self._acquire_lock(should_abort)
+        try:
             self._ensure_open()
             return len(
                 self._model.tokenize(
                     prompt.encode("utf-8"), add_bos=True, special=True
                 )
             )
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
         with self._lock:
@@ -322,6 +339,51 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         extra_create_args: Mapping[str, Any] = {},
         cancellation_token: CancellationToken | None = None,
     ) -> CreateResult:
+        request_started = time.monotonic()
+        deadline = request_started + self._config.inference_timeout_seconds
+        abort_event = threading.Event()
+
+        def should_abort() -> bool:
+            return (
+                abort_event.is_set()
+                or (
+                    cancellation_token is not None
+                    and cancellation_token.is_cancelled()
+                )
+                or time.monotonic() >= deadline
+            )
+
+        async def await_runtime_operation(operation: Callable[[], Any]) -> Any:
+            task = asyncio.create_task(asyncio.to_thread(operation))
+
+            def consume_result(completed: asyncio.Task[Any]) -> None:
+                if not completed.cancelled():
+                    try:
+                        completed.exception()
+                    except asyncio.CancelledError:
+                        pass
+
+            try:
+                while True:
+                    if cancellation_token is not None and cancellation_token.is_cancelled():
+                        abort_event.set()
+                        task.add_done_callback(consume_result)
+                        raise asyncio.CancelledError
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        abort_event.set()
+                        task.add_done_callback(consume_result)
+                        raise LocalModelTimeoutError(
+                            "Local model inference exceeded its wall-clock timeout"
+                        )
+                    done, _ = await asyncio.wait({task}, timeout=min(remaining, 0.01))
+                    if done:
+                        return task.result()
+            except asyncio.CancelledError:
+                abort_event.set()
+                task.add_done_callback(consume_result)
+                raise
+
         if tools:
             raise LocalModelProtocolError("Native tool calling is not supported")
         if tool_choice not in ("auto", "none"):
@@ -348,38 +410,35 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
         if max_tokens < 1:
             raise LocalModelProtocolError("max_tokens must be at least 1")
-        prompt_tokens = await asyncio.to_thread(self._runtime.count_tokens, prompt)
+        try:
+            prompt_tokens = await await_runtime_operation(
+                lambda: self._runtime.count_tokens(prompt, should_abort=should_abort)
+            )
+        except _LocalModelOperationAborted as exc:
+            if cancellation_token is not None and cancellation_token.is_cancelled():
+                raise asyncio.CancelledError from exc
+            raise LocalModelTimeoutError(
+                "Local model inference exceeded its wall-clock timeout"
+            ) from exc
         if prompt_tokens + max_tokens > self._config.n_ctx:
             raise LocalModelProtocolError(
                 "Requested prompt and completion exceed the model context budget"
             )
 
-        deadline = time.monotonic() + self._config.inference_timeout_seconds
-        abort_event = threading.Event()
-
-        def should_abort() -> bool:
-            return (
-                abort_event.is_set()
-                or (
-                    cancellation_token is not None
-                    and cancellation_token.is_cancelled()
-                )
-                or time.monotonic() >= deadline
-            )
-
         try:
-            response = await asyncio.to_thread(
-                self._runtime.generate,
-                prompt,
-                should_abort=should_abort,
-                max_tokens=max_tokens,
-                temperature=float(
-                    extra_create_args.get("temperature", self._config.temperature)
-                ),
-                top_p=float(extra_create_args.get("top_p", 1.0)),
-                stop=extra_create_args.get("stop", ["<|end|>"]),
-                seed=self._config.seed,
-                echo=False,
+            response = await await_runtime_operation(
+                lambda: self._runtime.generate(
+                    prompt,
+                    should_abort=should_abort,
+                    max_tokens=max_tokens,
+                    temperature=float(
+                        extra_create_args.get("temperature", self._config.temperature)
+                    ),
+                    top_p=float(extra_create_args.get("top_p", 1.0)),
+                    stop=extra_create_args.get("stop", ["<|end|>"]),
+                    seed=self._config.seed,
+                    echo=False,
+                )
             )
         except asyncio.CancelledError:
             abort_event.set()

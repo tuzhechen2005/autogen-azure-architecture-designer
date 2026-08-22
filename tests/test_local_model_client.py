@@ -275,6 +275,94 @@ class SharedModelConcurrencyTests(unittest.TestCase):
         self.assertEqual(client.total_usage().prompt_tokens, 2)
         self.assertEqual(client.total_usage().completion_tokens, 2)
 
+    def test_deadline_covers_waiting_for_token_count_lock(self) -> None:
+        class TokenLockProbeModel:
+            def __init__(self) -> None:
+                self.tokenizing = threading.Event()
+                self.release = threading.Event()
+
+            def reset(self) -> None:
+                pass
+
+            def tokenize(self, *args: object, **kwargs: object) -> list[int]:
+                self.tokenizing.set()
+                self.release.wait(timeout=1)
+                return [1]
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        model = TokenLockProbeModel()
+        client = _client_with_model(model)
+        client._config.inference_timeout_seconds = 0.02  # type: ignore[attr-defined]
+        first_done: list[BaseException] = []
+
+        def first_request() -> None:
+            try:
+                asyncio.run(client.create([UserMessage(content="first", source="user")]))
+            except BaseException as exc:
+                first_done.append(exc)
+
+        worker = threading.Thread(target=first_request)
+        worker.start()
+        self.assertTrue(model.tokenizing.wait(timeout=1))
+        started = time.monotonic()
+        with self.assertRaises(LocalModelTimeoutError):
+            asyncio.run(client.create([UserMessage(content="second", source="user")]))
+        elapsed = time.monotonic() - started
+        model.release.set()
+        worker.join(timeout=1)
+
+        self.assertLess(elapsed, 0.12)
+        self.assertTrue(any(isinstance(exc, LocalModelTimeoutError) for exc in first_done))
+
+    def test_cancellation_covers_waiting_for_token_count_lock(self) -> None:
+        class TokenLockProbeModel:
+            def __init__(self) -> None:
+                self.tokenizing = threading.Event()
+                self.release = threading.Event()
+
+            def reset(self) -> None:
+                pass
+
+            def tokenize(self, *args: object, **kwargs: object) -> list[int]:
+                self.tokenizing.set()
+                self.release.wait(timeout=1)
+                return [1]
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        client = _client_with_model(TokenLockProbeModel())
+        client._config.inference_timeout_seconds = 1.0  # type: ignore[attr-defined]
+        holder = threading.Thread(
+            target=lambda: asyncio.run(
+                client.create([UserMessage(content="holder", source="user")])
+            )
+        )
+        holder.start()
+        self.assertTrue(client._runtime._model.tokenizing.wait(timeout=1))  # type: ignore[attr-defined]
+        token = CancellationToken()
+        started = time.monotonic()
+        token.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(
+                client.create(
+                    [UserMessage(content="cancelled", source="user")],
+                    cancellation_token=token,
+                )
+            )
+        elapsed = time.monotonic() - started
+        client._runtime._model.release.set()  # type: ignore[attr-defined]
+        holder.join(timeout=1)
+        self.assertLess(elapsed, 0.12)
+
 
 class BackendEnvironmentIsolationTests(unittest.TestCase):
     def test_cpu_then_metal_clients_do_not_mutate_process_environment(self) -> None:
