@@ -52,11 +52,12 @@ _PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
 _STRUCTURED_GRAMMAR_LOCK = threading.Lock()
 _STRUCTURED_GRAMMARS: dict[type[ArchitecturePlan] | type[ArchitectureReview], object] = {}
 
+# `ws` is deliberately bounded. With an unbounded `[ \t\n\r]*` the model can
+# emit whitespace forever whenever it wants to skip a required field: the
+# grammar stays satisfiable, no other token is legal, and generation runs to the
+# token limit instead of completing the object. GBNF has no comment syntax, so
+# this note has to live outside the grammar string.
 _JSON_GRAMMAR_COMMON = r'''
-# Bounded whitespace. With an unbounded `[ \t\n\r]*` the model can emit
-# whitespace forever whenever it wants to skip a required field: the
-# grammar stays satisfiable, no other token is legal, and generation runs
-# to the token limit instead of completing the object.
 ws ::= [ \t\n\r]{0,20}
 string ::= "\"" char* "\""
 char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])

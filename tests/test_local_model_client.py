@@ -130,6 +130,69 @@ class FinishReasonTests(unittest.TestCase):
         )
         self.assertIsNotNone(model.grammar)
 
+    def test_grammars_are_valid_gbnf(self) -> None:
+        """The grammar text must be parseable GBNF.
+
+        llama.cpp reports grammar parse failures on stderr and then hands back
+        a null grammar, which segfaults the process at sampling time instead of
+        raising. GBNF also has no comment syntax, so a stray `#` line silently
+        invalidates the whole grammar. Validate the text directly.
+        """
+
+        from src.local_model_client import _PLAN_GRAMMAR, _REVIEW_GRAMMAR
+
+        for name, grammar in (("plan", _PLAN_GRAMMAR), ("review", _REVIEW_GRAMMAR)):
+            with self.subTest(grammar=name):
+                defined = set()
+                for line in grammar.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    self.assertFalse(
+                        stripped.startswith("#"),
+                        "GBNF has no comment syntax; comments belong outside the"
+                        " grammar string",
+                    )
+                    self.assertIn("::=", stripped, f"not a GBNF rule: {stripped!r}")
+                    defined.add(stripped.split("::=", 1)[0].strip())
+
+                self.assertIn("root", defined)
+                # Every referenced rule must be defined, otherwise llama.cpp
+                # rejects the grammar at parse time.
+                import re
+
+                for line in grammar.splitlines():
+                    if "::=" not in line:
+                        continue
+                    body = line.split("::=", 1)[1]
+                    body = re.sub(r'"(?:[^"\\]|\\.)*"', " ", body)
+                    body = re.sub(r"\[(?:[^\]\\]|\\.)*\]", " ", body)
+                    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_-]*", body):
+                        self.assertIn(
+                            token,
+                            defined,
+                            f"{name} grammar references undefined rule {token!r}",
+                        )
+
+    def test_bounded_whitespace_cannot_run_to_the_token_limit(self) -> None:
+        """`ws` must stay bounded.
+
+        An unbounded `ws` lets the model emit whitespace forever whenever it
+        wants to skip a required field, so generation reaches the token limit
+        and the truncation check rejects every response.
+        """
+
+        from src.local_model_client import _JSON_GRAMMAR_COMMON
+
+        ws_rules = [
+            line
+            for line in _JSON_GRAMMAR_COMMON.splitlines()
+            if line.strip().startswith("ws ::=")
+        ]
+        self.assertEqual(len(ws_rules), 1)
+        self.assertNotIn("]*", ws_rules[0])
+        self.assertRegex(ws_rules[0], r"\{0,\d+\}")
+
     def test_rejects_output_truncated_by_token_limit(self) -> None:
         class LengthLimitedModel:
             def reset(self) -> None:
