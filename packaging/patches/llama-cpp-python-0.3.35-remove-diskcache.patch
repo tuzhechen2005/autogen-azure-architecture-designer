@@ -1,0 +1,105 @@
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -14,7 +14,6 @@
+ dependencies = [
+     "typing-extensions>=4.5.0",
+     "numpy>=1.20.0",
+-    "diskcache>=5.6.1",
+     "jinja2>=2.11.3",
+ ]
+ requires-python = ">=3.8"
+--- a/llama_cpp/llama_cache.py
++++ b/llama_cpp/llama_cache.py
+@@ -7,8 +7,6 @@
+ )
+ from collections import OrderedDict
+ 
+-import diskcache
+-
+ import llama_cpp.llama
+ 
+ from .llama_types import *
+@@ -102,54 +100,39 @@
+ 
+ 
+ class LlamaDiskCache(BaseLlamaCache):
+-    """Cache for a llama.cpp model using disk."""
++    """Removed: the upstream disk cache persisted model state with pickle.
+ 
+-    def __init__(
+-        self, cache_dir: str = ".cache/llama_cache", capacity_bytes: int = (2 << 30)
+-    ):
+-        super().__init__(capacity_bytes)
+-        self.cache = diskcache.Cache(cache_dir)
++    Upstream implemented this cache on top of ``diskcache``, which serializes
++    with pickle and is affected by CVE-2025-69872: anyone able to write to the
++    cache directory can achieve arbitrary code execution in the reading
++    process. The dependency is dropped from this build entirely.
+ 
++    The name is kept so ``import llama_cpp`` and ``from llama_cpp import
++    LlamaDiskCache`` keep working, but constructing one fails loudly rather
++    than silently falling back to another cache backend. Use ``LlamaRAMCache``.
++    """
++
++    def __init__(self, *args, **kwargs):
++        raise NotImplementedError(
++            "LlamaDiskCache is disabled in this build: the upstream "
++            "implementation persists model state with diskcache/pickle "
++            "(CVE-2025-69872). Use LlamaRAMCache instead."
++        )
++
++    # Concrete no-op overrides so the failure surfaced to callers is the
++    # explicit NotImplementedError above, not an abstract-class TypeError.
+     @property
+-    def cache_size(self):
+-        return int(self.cache.volume())  # type: ignore
++    def cache_size(self) -> int:
++        raise NotImplementedError("LlamaDiskCache is disabled in this build")
+ 
+-    def _find_longest_prefix_key(
+-        self,
+-        key: Tuple[int, ...],
+-    ) -> Optional[Tuple[int, ...]]:
+-        min_len = 0
+-        min_key: Optional[Tuple[int, ...]] = None
+-        for k in self.cache.iterkeys():  # type: ignore
+-            prefix_len = llama_cpp.llama.Llama.longest_token_prefix(k, key)
+-            if prefix_len > min_len:
+-                min_len = prefix_len
+-                min_key = k  # type: ignore
+-        return min_key
++    def _find_longest_prefix_key(self, key):
++        raise NotImplementedError("LlamaDiskCache is disabled in this build")
+ 
+-    def __getitem__(self, key: Sequence[int]) -> "llama_cpp.llama.LlamaState":
+-        key = tuple(key)
+-        _key = self._find_longest_prefix_key(key)
+-        if _key is None:
+-            raise KeyError("Key not found")
+-        value: "llama_cpp.llama.LlamaState" = self.cache.pop(_key)  # type: ignore
+-        # NOTE: This puts an integer as key in cache, which breaks,
+-        # Llama.longest_token_prefix(k, key) above since k is not a tuple of ints/tokens
+-        # self.cache.push(_key, side="front")  # type: ignore
+-        return value
++    def __getitem__(self, key):
++        raise NotImplementedError("LlamaDiskCache is disabled in this build")
+ 
+-    def __contains__(self, key: Sequence[int]) -> bool:
+-        return self._find_longest_prefix_key(tuple(key)) is not None
++    def __contains__(self, key) -> bool:
++        raise NotImplementedError("LlamaDiskCache is disabled in this build")
+ 
+-    def __setitem__(self, key: Sequence[int], value: "llama_cpp.llama.LlamaState"):
+-        print("LlamaDiskCache.__setitem__: called", file=sys.stderr)
+-        key = tuple(key)
+-        if key in self.cache:
+-            print("LlamaDiskCache.__setitem__: delete", file=sys.stderr)
+-            del self.cache[key]
+-        self.cache[key] = value
+-        print("LlamaDiskCache.__setitem__: set", file=sys.stderr)
+-        while self.cache_size > self.capacity_bytes and len(self.cache) > 0:
+-            key_to_remove = next(iter(self.cache))
+-            del self.cache[key_to_remove]
+-        print("LlamaDiskCache.__setitem__: trim", file=sys.stderr)
++    def __setitem__(self, key, value):
++        raise NotImplementedError("LlamaDiskCache is disabled in this build")

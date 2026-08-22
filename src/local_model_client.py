@@ -25,6 +25,7 @@ from autogen_core.models import (
     UserMessage,
 )
 from .config import AppConfig
+from .schemas import ArchitecturePlan, ArchitectureReview
 
 
 if TYPE_CHECKING:
@@ -39,7 +40,53 @@ class LocalModelTimeoutError(TimeoutError):
     """Raised when local inference exceeds its configured wall-clock deadline."""
 
 
+class LocalModelRuntimeConflictError(LocalModelProtocolError):
+    """Raised when a live client would be invalidated by a runtime replacement."""
+
+
+class _LocalModelOperationAborted(RuntimeError):
+    """Internal signal used when a queued native operation must not start."""
+
+
 _PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
+_STRUCTURED_GRAMMAR_LOCK = threading.Lock()
+_STRUCTURED_GRAMMARS: dict[type[ArchitecturePlan] | type[ArchitectureReview], object] = {}
+
+# `ws` and `string` are deliberately bounded. An unbounded quantifier lets the
+# model continue forever whenever it wants to avoid closing a construct -- the
+# grammar stays satisfiable, so generation runs to the token limit and the
+# truncation check rejects the whole response. Observed in practice: the model
+# looped on "#ArchitecturePlan #SystemDesign ..." inside a summary string until
+# it exhausted max_tokens. The bounds are far above any legitimate value.
+#
+# GBNF has no comment syntax, so this note has to live outside the string.
+_JSON_GRAMMAR_COMMON = r'''
+ws ::= [ \t\n\r]{0,20}
+string ::= "\"" char{0,320} "\""
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+integer ::= "-"? [0-9]+
+strings ::= "[" ws (string ("," ws string)*)? "]" ws
+'''
+
+_PLAN_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
+root ::= "{" ws "\"title\"" ws ":" ws string "," ws "\"summary\"" ws ":" ws string "," ws "\"revision\"" ws ":" ws integer "," ws "\"assumptions\"" ws ":" ws strings "," ws "\"resources\"" ws ":" ws resources "," ws "\"data_flow\"" ws ":" ws strings "," ws "\"high_availability_strategy\"" ws ":" ws strings "," ws "\"security_strategy\"" ws ":" ws strings "," ws "\"operations_strategy\"" ws ":" ws strings "," ws "\"cost_notes\"" ws ":" ws strings "}"
+resources ::= "[" ws resource ("," ws resource)* "]" ws
+resource ::= "{" ws "\"name\"" ws ":" ws string "," ws "\"resource_type\"" ws ":" ws string "," ws "\"region\"" ws ":" ws string "," ws "\"sku\"" ws ":" ws string "," ws "\"purpose\"" ws ":" ws string "," ws "\"high_availability\"" ws ":" ws strings "," ws "\"depends_on\"" ws ":" ws strings "}" ws
+'''
+
+_REVIEW_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
+root ::= "{" ws "\"decision\"" ws ":" ws decision "," ws "\"summary\"" ws ":" ws string "," ws "\"strengths\"" ws ":" ws strings "," ws "\"findings\"" ws ":" ws findings "," ws "\"required_changes\"" ws ":" ws changes "}"
+decision ::= "\"approved\"" | "\"revision_required\""
+findings ::= "[" ws (finding ("," ws finding)*)? "]" ws
+finding ::= "{" ws "\"severity\"" ws ":" ws severity "," ws "\"category\"" ws ":" ws string "," ws "\"issue\"" ws ":" ws string "," ws "\"recommendation\"" ws ":" ws string "}" ws
+severity ::= "\"critical\"" | "\"high\"" | "\"medium\"" | "\"low\""
+changes ::= "[" ws (change ("," ws change)*)? "]" ws
+change ::= "{" ws "\"description\"" ws ":" ws string "," ws "\"target_field\"" ws ":" ws (resource-change | plan-change) "," ws "\"required_terms\"" ws ":" ws strings "}" ws
+resource-change ::= resource-target "," ws "\"resource_name\"" ws ":" ws string
+plan-change ::= plan-target "," ws "\"resource_name\"" ws ":" ws "null"
+resource-target ::= "\"resource.high_availability\"" | "\"resource.sku\"" | "\"resource.region\"" | "\"resource.purpose\""
+plan-target ::= "\"plan.high_availability_strategy\"" | "\"plan.security_strategy\"" | "\"plan.operations_strategy\""
+'''
 
 
 def _reject_phi3_protocol_tokens(content: str) -> None:
@@ -101,6 +148,40 @@ def _render_phi3_prompt(messages: Sequence[LLMMessage]) -> str:
     return "".join(parts)
 
 
+def _schema_for_messages(
+    messages: Sequence[LLMMessage],
+) -> type[ArchitecturePlan] | type[ArchitectureReview] | None:
+    """Select a grammar only for our trusted, fixed-role agent system prompts."""
+
+    for message in messages:
+        if not isinstance(message, SystemMessage):
+            continue
+        content = _content_to_text(message.content)
+        if content.startswith("You are PlannerAgent,"):
+            return ArchitecturePlan
+        if content.startswith("You are ReviewerAgent,"):
+            return ArchitectureReview
+    return None
+
+
+def _structured_grammar(
+    schema: type[ArchitecturePlan] | type[ArchitectureReview],
+) -> object:
+    """Build and cache llama.cpp's JSON-schema grammar for trusted schemas only."""
+
+    with _STRUCTURED_GRAMMAR_LOCK:
+        grammar = _STRUCTURED_GRAMMARS.get(schema)
+        if grammar is None:
+            from llama_cpp import LlamaGrammar
+
+            grammar = LlamaGrammar.from_string(
+                _PLAN_GRAMMAR if schema is ArchitecturePlan else _REVIEW_GRAMMAR,
+                verbose=False,
+            )
+            _STRUCTURED_GRAMMARS[schema] = grammar
+        return grammar
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRuntimeIdentity:
     """The settings that determine one native llama.cpp weight/context load."""
@@ -141,6 +222,15 @@ class LlamaCppModelRuntime:
         if self._closed:
             raise LocalModelProtocolError("Local model runtime is closed")
 
+    def _acquire_lock(self, should_abort: Callable[[], bool] | None) -> None:
+        """Acquire the mutable-context lock while permitting queued cancellation."""
+
+        while True:
+            if should_abort is not None and should_abort():
+                raise _LocalModelOperationAborted()
+            if self._lock.acquire(timeout=0.005):
+                return
+
     def generate(
         self,
         prompt: str,
@@ -148,7 +238,8 @@ class LlamaCppModelRuntime:
         should_abort: Callable[[], bool] | None = None,
         **kwargs: object,
     ) -> dict[str, object]:
-        with self._lock:
+        self._acquire_lock(should_abort)
+        try:
             self._ensure_open()
             self._model.reset()
             abort_callback: object | None = None
@@ -183,15 +274,22 @@ class LlamaCppModelRuntime:
                     )
                 # Keep the ctypes callback alive until after native generation ends.
                 _ = abort_callback
+        finally:
+            self._lock.release()
 
-    def count_tokens(self, prompt: str) -> int:
-        with self._lock:
+    def count_tokens(
+        self, prompt: str, *, should_abort: Callable[[], bool] | None = None
+    ) -> int:
+        self._acquire_lock(should_abort)
+        try:
             self._ensure_open()
             return len(
                 self._model.tokenize(
                     prompt.encode("utf-8"), add_bos=True, special=True
                 )
             )
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
         with self._lock:
@@ -205,27 +303,48 @@ RuntimeFactory = Callable[[AppConfig], LlamaCppModelRuntime]
 
 
 class SingleModelRuntimeRegistry:
-    """Own at most one process-wide model runtime and close it on replacement."""
+    """Own one runtime and lease it to clients without invalidating live users.
+
+    A different model/backend identity is rejected while any client lease exists.
+    Once all clients release their leases, the next acquire replaces the runtime.
+    This bounds process model memory to one loaded runtime while making a client's
+    lifetime explicit and safe across sessions.
+    """
 
     def __init__(self, factory: RuntimeFactory = LlamaCppModelRuntime) -> None:
         self._factory = factory
         self._lock = threading.RLock()
         self._identity: ModelRuntimeIdentity | None = None
         self._runtime: LlamaCppModelRuntime | None = None
+        self._leases = 0
 
     def acquire(self, config: AppConfig) -> LlamaCppModelRuntime:
         identity = ModelRuntimeIdentity.from_config(config)
         with self._lock:
             if self._identity == identity and self._runtime is not None:
+                self._leases += 1
                 return self._runtime
             if self._runtime is not None:
+                if self._leases:
+                    raise LocalModelRuntimeConflictError(
+                        "Local model runtime configuration conflicts with active "
+                        "clients; close existing clients before switching backend or model"
+                    )
                 self._runtime.close()
             self._identity = None
             self._runtime = None
             runtime = self._factory(config)
             self._identity = identity
             self._runtime = runtime
+            self._leases = 1
             return runtime
+
+    def release(self, runtime: LlamaCppModelRuntime) -> None:
+        """Release one client lease without closing a runtime still in use."""
+
+        with self._lock:
+            if runtime is self._runtime and self._leases:
+                self._leases -= 1
 
     def close(self) -> None:
         with self._lock:
@@ -233,6 +352,7 @@ class SingleModelRuntimeRegistry:
                 self._runtime.close()
             self._identity = None
             self._runtime = None
+            self._leases = 0
 
 
 _PROCESS_MODEL_REGISTRY = SingleModelRuntimeRegistry()
@@ -254,9 +374,9 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         runtime_registry: SingleModelRuntimeRegistry | None = None,
     ) -> None:
         self._config = config
-        self._runtime = (
-            runtime_registry or _PROCESS_MODEL_REGISTRY
-        ).acquire(config)
+        self._runtime_registry = runtime_registry or _PROCESS_MODEL_REGISTRY
+        self._runtime = self._runtime_registry.acquire(config)
+        self._released = False
         self._usage_lock = threading.Lock()
         self._actual_usage = RequestUsage(
             prompt_tokens=0,
@@ -292,6 +412,51 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         extra_create_args: Mapping[str, Any] = {},
         cancellation_token: CancellationToken | None = None,
     ) -> CreateResult:
+        request_started = time.monotonic()
+        deadline = request_started + self._config.inference_timeout_seconds
+        abort_event = threading.Event()
+
+        def should_abort() -> bool:
+            return (
+                abort_event.is_set()
+                or (
+                    cancellation_token is not None
+                    and cancellation_token.is_cancelled()
+                )
+                or time.monotonic() >= deadline
+            )
+
+        async def await_runtime_operation(operation: Callable[[], Any]) -> Any:
+            task = asyncio.create_task(asyncio.to_thread(operation))
+
+            def consume_result(completed: asyncio.Task[Any]) -> None:
+                if not completed.cancelled():
+                    try:
+                        completed.exception()
+                    except asyncio.CancelledError:
+                        pass
+
+            try:
+                while True:
+                    if cancellation_token is not None and cancellation_token.is_cancelled():
+                        abort_event.set()
+                        task.add_done_callback(consume_result)
+                        raise asyncio.CancelledError
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        abort_event.set()
+                        task.add_done_callback(consume_result)
+                        raise LocalModelTimeoutError(
+                            "Local model inference exceeded its wall-clock timeout"
+                        )
+                    done, _ = await asyncio.wait({task}, timeout=min(remaining, 0.01))
+                    if done:
+                        return task.result()
+            except asyncio.CancelledError:
+                abort_event.set()
+                task.add_done_callback(consume_result)
+                raise
+
         if tools:
             raise LocalModelProtocolError("Native tool calling is not supported")
         if tool_choice not in ("auto", "none"):
@@ -318,38 +483,38 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
         if max_tokens < 1:
             raise LocalModelProtocolError("max_tokens must be at least 1")
-        prompt_tokens = await asyncio.to_thread(self._runtime.count_tokens, prompt)
+        schema = _schema_for_messages(messages)
+        grammar = _structured_grammar(schema) if schema is not None else None
+        try:
+            prompt_tokens = await await_runtime_operation(
+                lambda: self._runtime.count_tokens(prompt, should_abort=should_abort)
+            )
+        except _LocalModelOperationAborted as exc:
+            if cancellation_token is not None and cancellation_token.is_cancelled():
+                raise asyncio.CancelledError from exc
+            raise LocalModelTimeoutError(
+                "Local model inference exceeded its wall-clock timeout"
+            ) from exc
         if prompt_tokens + max_tokens > self._config.n_ctx:
             raise LocalModelProtocolError(
                 "Requested prompt and completion exceed the model context budget"
             )
 
-        deadline = time.monotonic() + self._config.inference_timeout_seconds
-        abort_event = threading.Event()
-
-        def should_abort() -> bool:
-            return (
-                abort_event.is_set()
-                or (
-                    cancellation_token is not None
-                    and cancellation_token.is_cancelled()
-                )
-                or time.monotonic() >= deadline
-            )
-
         try:
-            response = await asyncio.to_thread(
-                self._runtime.generate,
-                prompt,
-                should_abort=should_abort,
-                max_tokens=max_tokens,
-                temperature=float(
-                    extra_create_args.get("temperature", self._config.temperature)
-                ),
-                top_p=float(extra_create_args.get("top_p", 1.0)),
-                stop=extra_create_args.get("stop", ["<|end|>"]),
-                seed=self._config.seed,
-                echo=False,
+            response = await await_runtime_operation(
+                lambda: self._runtime.generate(
+                    prompt,
+                    should_abort=should_abort,
+                    max_tokens=max_tokens,
+                    temperature=float(
+                        extra_create_args.get("temperature", self._config.temperature)
+                    ),
+                    top_p=float(extra_create_args.get("top_p", 1.0)),
+                    stop=extra_create_args.get("stop", ["<|end|>"]),
+                    grammar=grammar,
+                    seed=self._config.seed,
+                    echo=False,
+                )
             )
         except asyncio.CancelledError:
             abort_event.set()
@@ -419,9 +584,11 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
 
     async def close(self) -> None:
-        # The process registry owns the shared runtime. It closes the model when
-        # replacing its single slot and again idempotently at process shutdown.
-        return None
+        """Release this client's runtime lease; process shutdown owns final close."""
+
+        if not self._released:
+            self._runtime_registry.release(self._runtime)
+            self._released = True
 
     def actual_usage(self) -> RequestUsage:
         with self._usage_lock:
