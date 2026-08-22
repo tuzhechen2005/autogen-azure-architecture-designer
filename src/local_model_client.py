@@ -39,6 +39,14 @@ class LocalModelTimeoutError(TimeoutError):
     """Raised when local inference exceeds its configured wall-clock deadline."""
 
 
+class LocalModelRuntimeConflictError(LocalModelProtocolError):
+    """Raised when a live client would be invalidated by a runtime replacement."""
+
+
+class _LocalModelOperationAborted(RuntimeError):
+    """Internal signal used when a queued native operation must not start."""
+
+
 _PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
 
 
@@ -205,27 +213,48 @@ RuntimeFactory = Callable[[AppConfig], LlamaCppModelRuntime]
 
 
 class SingleModelRuntimeRegistry:
-    """Own at most one process-wide model runtime and close it on replacement."""
+    """Own one runtime and lease it to clients without invalidating live users.
+
+    A different model/backend identity is rejected while any client lease exists.
+    Once all clients release their leases, the next acquire replaces the runtime.
+    This bounds process model memory to one loaded runtime while making a client's
+    lifetime explicit and safe across sessions.
+    """
 
     def __init__(self, factory: RuntimeFactory = LlamaCppModelRuntime) -> None:
         self._factory = factory
         self._lock = threading.RLock()
         self._identity: ModelRuntimeIdentity | None = None
         self._runtime: LlamaCppModelRuntime | None = None
+        self._leases = 0
 
     def acquire(self, config: AppConfig) -> LlamaCppModelRuntime:
         identity = ModelRuntimeIdentity.from_config(config)
         with self._lock:
             if self._identity == identity and self._runtime is not None:
+                self._leases += 1
                 return self._runtime
             if self._runtime is not None:
+                if self._leases:
+                    raise LocalModelRuntimeConflictError(
+                        "Local model runtime configuration conflicts with active "
+                        "clients; close existing clients before switching backend or model"
+                    )
                 self._runtime.close()
             self._identity = None
             self._runtime = None
             runtime = self._factory(config)
             self._identity = identity
             self._runtime = runtime
+            self._leases = 1
             return runtime
+
+    def release(self, runtime: LlamaCppModelRuntime) -> None:
+        """Release one client lease without closing a runtime still in use."""
+
+        with self._lock:
+            if runtime is self._runtime and self._leases:
+                self._leases -= 1
 
     def close(self) -> None:
         with self._lock:
@@ -233,6 +262,7 @@ class SingleModelRuntimeRegistry:
                 self._runtime.close()
             self._identity = None
             self._runtime = None
+            self._leases = 0
 
 
 _PROCESS_MODEL_REGISTRY = SingleModelRuntimeRegistry()
@@ -254,9 +284,9 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         runtime_registry: SingleModelRuntimeRegistry | None = None,
     ) -> None:
         self._config = config
-        self._runtime = (
-            runtime_registry or _PROCESS_MODEL_REGISTRY
-        ).acquire(config)
+        self._runtime_registry = runtime_registry or _PROCESS_MODEL_REGISTRY
+        self._runtime = self._runtime_registry.acquire(config)
+        self._released = False
         self._usage_lock = threading.Lock()
         self._actual_usage = RequestUsage(
             prompt_tokens=0,
@@ -419,9 +449,11 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
 
     async def close(self) -> None:
-        # The process registry owns the shared runtime. It closes the model when
-        # replacing its single slot and again idempotently at process shutdown.
-        return None
+        """Release this client's runtime lease; process shutdown owns final close."""
+
+        if not self._released:
+            self._runtime_registry.release(self._runtime)
+            self._released = True
 
     def actual_usage(self) -> RequestUsage:
         with self._usage_lock:

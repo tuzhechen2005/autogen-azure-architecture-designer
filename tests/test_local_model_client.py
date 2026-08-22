@@ -19,6 +19,8 @@ from src.local_model_client import (
     LlamaCppChatCompletionClient,
     LlamaCppModelRuntime,
     LocalModelProtocolError,
+    LocalModelRuntimeConflictError,
+    LocalModelTimeoutError,
     SingleModelRuntimeRegistry,
     _render_phi3_prompt,
 )
@@ -346,7 +348,7 @@ class SingleModelRuntimeRegistryTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual(len(created), 1)
 
-    def test_replacement_closes_old_runtime_before_loading_next(self) -> None:
+    def test_conflicting_runtime_is_rejected_while_client_lease_is_active(self) -> None:
         events: list[str] = []
 
         class StubRuntime:
@@ -362,13 +364,88 @@ class SingleModelRuntimeRegistryTests(unittest.TestCase):
             return StubRuntime(label)  # type: ignore[return-value]
 
         registry = SingleModelRuntimeRegistry(factory)
-        registry.acquire(AppConfig(model_path=Path("first.gguf")))
-        registry.acquire(AppConfig(model_path=Path("second.gguf")))
+        first = registry.acquire(AppConfig(model_path=Path("first.gguf")))
+        with self.assertRaisesRegex(LocalModelRuntimeConflictError, "active clients"):
+            registry.acquire(AppConfig(model_path=Path("second.gguf")))
 
-        self.assertEqual(
-            events,
-            ["load:first.gguf", "close:first.gguf", "load:second.gguf"],
-        )
+        self.assertEqual(events, ["load:first.gguf"])
+        registry.release(first)
+        registry.acquire(AppConfig(model_path=Path("second.gguf")))
+        self.assertEqual(events, ["load:first.gguf", "close:first.gguf", "load:second.gguf"])
 
         registry.close()
         self.assertEqual(events[-1], "close:second.gguf")
+
+    def test_live_client_survives_conflicting_client_attempt(self) -> None:
+        class StubRuntime:
+            def __init__(self) -> None:
+                self.close_calls = 0
+
+            def close(self) -> None:
+                self.close_calls += 1
+
+        runtime = StubRuntime()
+        registry = SingleModelRuntimeRegistry(lambda _config: runtime)  # type: ignore[arg-type]
+        first = registry.acquire(AppConfig(model_path=Path("model.gguf"), n_gpu_layers=-1))
+
+        with self.assertRaises(LocalModelRuntimeConflictError):
+            registry.acquire(AppConfig(model_path=Path("model.gguf"), n_gpu_layers=0))
+
+        self.assertIs(first, runtime)
+        self.assertEqual(runtime.close_calls, 0)
+
+    def test_client_keeps_working_after_conflicting_backend_client_is_rejected(self) -> None:
+        class HighFidelityRuntime:
+            def __init__(self) -> None:
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.calls = 0
+                self.closed = False
+
+            def count_tokens(self, prompt: str, *, should_abort: object = None) -> int:
+                return 1
+
+            def generate(self, prompt: str, *, should_abort: object = None, **kwargs: object) -> dict[str, object]:
+                self.calls += 1
+                if self.calls == 1:
+                    self.started.set()
+                    self.release.wait(timeout=1)
+                if callable(should_abort) and should_abort():
+                    raise RuntimeError("unexpected aborted active request")
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+            def close(self) -> None:
+                self.closed = True
+
+        runtime = HighFidelityRuntime()
+        registry = SingleModelRuntimeRegistry(lambda _config: runtime)  # type: ignore[arg-type]
+        metal_client = LlamaCppChatCompletionClient(
+            AppConfig(model_path=Path("model.gguf"), n_gpu_layers=-1),
+            runtime_registry=registry,
+        )
+        errors: list[BaseException] = []
+
+        def invoke_first_round() -> None:
+            try:
+                asyncio.run(metal_client.create([UserMessage(content="round 1", source="user")]))
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=invoke_first_round)
+        worker.start()
+        self.assertTrue(runtime.started.wait(timeout=1))
+        with self.assertRaises(LocalModelRuntimeConflictError):
+            LlamaCppChatCompletionClient(
+                AppConfig(model_path=Path("model.gguf"), n_gpu_layers=0),
+                runtime_registry=registry,
+            )
+        self.assertFalse(runtime.closed)
+        runtime.release.set()
+        worker.join(timeout=1)
+        self.assertEqual(errors, [])
+        asyncio.run(metal_client.create([UserMessage(content="round 2", source="user")]))
+        self.assertEqual(runtime.calls, 2)
+        asyncio.run(metal_client.close())
