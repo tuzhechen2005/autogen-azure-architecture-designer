@@ -205,6 +205,18 @@ class FinishReasonTests(unittest.TestCase):
         self.assertNotIn("]*", ws_rules[0])
         self.assertRegex(ws_rules[0], r"\{0,\d+\}")
 
+        # `string` must be bounded too: the model was observed looping on
+        # "#ArchitecturePlan #SystemDesign ..." inside a string until it
+        # exhausted max_tokens.
+        string_rules = [
+            line
+            for line in _JSON_GRAMMAR_COMMON.splitlines()
+            if line.strip().startswith("string ::=")
+        ]
+        self.assertEqual(len(string_rules), 1)
+        self.assertNotIn("char*", string_rules[0])
+        self.assertRegex(string_rules[0], r"char\{0,\d+\}")
+
     def test_rejects_output_truncated_by_token_limit(self) -> None:
         class LengthLimitedModel:
             def reset(self) -> None:
