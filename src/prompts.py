@@ -28,7 +28,7 @@ Required JSON shape:
   "resources":[{
     "name":"...","resource_type":"Microsoft.Service/type","region":"...",
     "sku":"...","purpose":"...","high_availability":["..."],
-    "depends_on":["existing-resource-name"]
+    "depends_on":[]
   }],
   "data_flow":["step 1", "step 2"],
   "high_availability_strategy":["..."],

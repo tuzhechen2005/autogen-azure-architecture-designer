@@ -53,7 +53,11 @@ _STRUCTURED_GRAMMAR_LOCK = threading.Lock()
 _STRUCTURED_GRAMMARS: dict[type[ArchitecturePlan] | type[ArchitectureReview], object] = {}
 
 _JSON_GRAMMAR_COMMON = r'''
-ws ::= [ \t\n\r]*
+# Bounded whitespace. With an unbounded `[ \t\n\r]*` the model can emit
+# whitespace forever whenever it wants to skip a required field: the
+# grammar stays satisfiable, no other token is legal, and generation runs
+# to the token limit instead of completing the object.
+ws ::= [ \t\n\r]{0,20}
 string ::= "\"" char* "\""
 char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
 integer ::= "-"? [0-9]+
@@ -61,13 +65,13 @@ strings ::= "[" ws (string ("," ws string)*)? "]" ws
 '''
 
 _PLAN_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
-root ::= "{" ws "\"title\"" ws ":" ws string "," ws "\"summary\"" ws ":" ws string "," ws "\"revision\"" ws ":" ws integer "," ws "\"assumptions\"" ws ":" ws strings "," ws "\"resources\"" ws ":" ws resources "," ws "\"data_flow\"" ws ":" ws strings "," ws "\"high_availability_strategy\"" ws ":" ws strings "," ws "\"security_strategy\"" ws ":" ws strings "," ws "\"operations_strategy\"" ws ":" ws strings "," ws "\"cost_notes\"" ws ":" ws strings "}" ws
+root ::= "{" ws "\"title\"" ws ":" ws string "," ws "\"summary\"" ws ":" ws string "," ws "\"revision\"" ws ":" ws integer "," ws "\"assumptions\"" ws ":" ws strings "," ws "\"resources\"" ws ":" ws resources "," ws "\"data_flow\"" ws ":" ws strings "," ws "\"high_availability_strategy\"" ws ":" ws strings "," ws "\"security_strategy\"" ws ":" ws strings "," ws "\"operations_strategy\"" ws ":" ws strings "," ws "\"cost_notes\"" ws ":" ws strings "}"
 resources ::= "[" ws resource ("," ws resource)* "]" ws
 resource ::= "{" ws "\"name\"" ws ":" ws string "," ws "\"resource_type\"" ws ":" ws string "," ws "\"region\"" ws ":" ws string "," ws "\"sku\"" ws ":" ws string "," ws "\"purpose\"" ws ":" ws string "," ws "\"high_availability\"" ws ":" ws strings "," ws "\"depends_on\"" ws ":" ws strings "}" ws
 '''
 
 _REVIEW_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
-root ::= "{" ws "\"decision\"" ws ":" ws decision "," ws "\"summary\"" ws ":" ws string "," ws "\"strengths\"" ws ":" ws strings "," ws "\"findings\"" ws ":" ws findings "," ws "\"required_changes\"" ws ":" ws changes "}" ws
+root ::= "{" ws "\"decision\"" ws ":" ws decision "," ws "\"summary\"" ws ":" ws string "," ws "\"strengths\"" ws ":" ws strings "," ws "\"findings\"" ws ":" ws findings "," ws "\"required_changes\"" ws ":" ws changes "}"
 decision ::= "\"approved\"" | "\"revision_required\""
 findings ::= "[" ws (finding ("," ws finding)*)? "]" ws
 finding ::= "{" ws "\"severity\"" ws ":" ws severity "," ws "\"category\"" ws ":" ws string "," ws "\"issue\"" ws ":" ws string "," ws "\"recommendation\"" ws ":" ws string "}" ws
