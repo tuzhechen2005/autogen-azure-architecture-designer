@@ -4,6 +4,14 @@
 #
 #    pip-compile --generate-hashes --output-file=requirements.lock requirements.txt
 #
+# llama-cpp-python is installed from the official PyPI sdist (the pinned hash
+# below is the upstream sdist) with packaging/patches/
+# llama-cpp-python-0.3.35-remove-diskcache.patch applied at build time. That
+# patch drops the mandatory `diskcache` dependency and the pickle-backed
+# LlamaDiskCache implementation, which are affected by CVE-2025-69872.
+# `diskcache` therefore does not appear in this lock and is not installed.
+# See README.md for the exact build commands.
+#
 altair==5.5.0 \
     --hash=sha256:91a310b926508d560fe0148d02a194f38b824122641ef528113d029fcd129f8c \
     --hash=sha256:d960ebe6178c56de3855a68c47b516be38640b73fb3b5111c2a9ca90546dd73d
@@ -218,10 +226,6 @@ click==8.4.2 \
     --hash=sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6 \
     --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
     # via streamlit
-diskcache==5.6.3 \
-    --hash=sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc \
-    --hash=sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19
-    # via llama-cpp-python
 gitdb==4.0.12 \
     --hash=sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571 \
     --hash=sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf

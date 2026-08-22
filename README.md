@@ -38,7 +38,7 @@ flowchart LR
 - Python 3.11.15
 - Phi-3 Mini 4K Instruct Q4 GGUF
 - AutoGen AgentChat/Core 0.7.5
-- `llama-cpp-python` 0.3.34
+- `llama-cpp-python` 0.3.35（官方 sdist + 本仓库安全补丁）
 - Streamlit 1.48.1
 
 建议预留至少 5 GiB 磁盘空间和 6 GiB 可用内存。模型文件约 2.2 GiB，不包含在仓库中。
@@ -51,14 +51,27 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-Apple Silicon 使用完整哈希锁文件安装，并从源码编译带 Metal 支持的
-`llama-cpp-python`：
+Apple Silicon 分两步安装。先从官方 sdist 构建带 Metal 支持、且已移除
+`diskcache` 的 `llama-cpp-python`，再用完整哈希锁文件安装其余依赖。
+
+`llama-cpp-python` 的上游包元数据强制依赖 `diskcache`，而 `diskcache` 的
+pickle 持久化受 CVE-2025-69872 影响且**没有任何已修复版本**（5.6.3 既是最新版
+也是受影响版本）。因此本仓库在官方源码上应用
+`packaging/patches/llama-cpp-python-0.3.35-remove-diskcache.patch`，移除该强制
+依赖与 pickle 磁盘缓存实现，同时保留 `Llama` API、`LlamaRAMCache` 与
+Metal/CPU 推理能力。下面的脚本会校验官方 sdist 与补丁两者的 SHA-256：
 
 ```bash
 CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_APPLE_SILICON_PROCESSOR=arm64 -DGGML_METAL=on" \
-python -m pip install --require-hashes --no-binary=llama-cpp-python \
-  -r requirements.lock
+packaging/build_llama_cpp_python.sh dist/wheels
+
+python -m pip install dist/wheels/llama_cpp_python-*.whl
+
+python -m pip install --require-hashes -r requirements.lock
 ```
+
+`dist/wheels` 只是本地构建产物，不纳入版本控制。构建脚本会在补丁应用后再次
+检查源码中不存在 `diskcache` 引用，任何残留都会让构建失败。
 
 如默认 PyPI 在当前网络不可达，可在上述 `pip install` 命令中临时增加可信的 `--index-url`；仓库不强制绑定镜像。
 `requirements.txt` 是人工维护的直接依赖输入；`requirements.lock` 是 Python 3.11 的完整
