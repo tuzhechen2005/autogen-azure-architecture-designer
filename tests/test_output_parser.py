@@ -7,6 +7,7 @@ import unittest
 from pydantic import BaseModel, ConfigDict
 
 from src.output_parser import StructuredOutputError, parse_structured_output
+from src.schemas import ArchitecturePlan
 
 
 class TinyPayload(BaseModel):
@@ -40,3 +41,20 @@ class StrictJsonEnvelopeTests(unittest.TestCase):
             parse_structured_output('```json\n{"value":2}\n```', TinyPayload).value,
             2,
         )
+
+
+class ArchitectureProtocolRegressionTests(unittest.TestCase):
+    def test_rejects_interjected_text_and_missing_required_dependency_field(self) -> None:
+        raw = '''{
+          "title":"可靠 API", "summary":"用于验证严格结构化协议的完整计划。", "revision":1,
+          "assumptions":[], "resources":[{
+            "name":"api", "resource_type":"Microsoft.Web/sites", "region":"East US",
+            "sku":"P1v3", "purpose":"承载 API", "high_availability":[]
+          }], "data_flow":["client to api"],
+          "high_availability_strategy":["two instances"], "security_strategy":[],
+          "operations_strategy":[], "cost_notes":[]
+        }'''
+        for malformed in (raw, raw.replace('"name":"api",', 'ran\n"name":"api",')):
+            with self.subTest(malformed=malformed[:20]):
+                with self.assertRaises(StructuredOutputError):
+                    parse_structured_output(malformed, ArchitecturePlan)

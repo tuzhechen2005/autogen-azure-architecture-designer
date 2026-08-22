@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from autogen_core import CancellationToken
-from autogen_core.models import AssistantMessage, RequestUsage, UserMessage
+from autogen_core.models import AssistantMessage, RequestUsage, SystemMessage, UserMessage
 
 from src.config import AppConfig
 from src.local_model_client import (
@@ -25,6 +25,7 @@ from src.local_model_client import (
     _render_phi3_prompt,
 )
 from src.prompts import build_initial_plan_task
+from src.prompts import PLANNER_SYSTEM_PROMPT
 
 
 PHI3_PROTOCOL_TOKENS = (
@@ -105,6 +106,30 @@ class Phi3ProtocolBoundaryTests(unittest.TestCase):
 
 
 class FinishReasonTests(unittest.TestCase):
+    def test_planner_uses_fixed_complete_json_grammar(self) -> None:
+        class GrammarProbeModel:
+            def reset(self) -> None:
+                pass
+
+            def __call__(self, prompt: str, **kwargs: object) -> dict[str, object]:
+                self.grammar = kwargs.get("grammar")
+                return {
+                    "choices": [{"text": "{}", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        model = GrammarProbeModel()
+        client = _client_with_model(model)
+        asyncio.run(
+            client.create(
+                [
+                    SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+                    UserMessage(content="return JSON", source="user"),
+                ]
+            )
+        )
+        self.assertIsNotNone(model.grammar)
+
     def test_rejects_output_truncated_by_token_limit(self) -> None:
         class LengthLimitedModel:
             def reset(self) -> None:

@@ -57,7 +57,7 @@ class AppConfig:
     model_path: Path
     model_root: Path | None = None
     n_ctx: int = 4096
-    max_tokens: int = 768
+    max_tokens: int = 1024
     temperature: float = 0.0
     n_gpu_layers: int = -1
     max_review_rounds: int = 2
@@ -77,7 +77,7 @@ class AppConfig:
             model_path=model_path,
             model_root=trusted_model_root_from_env(),
             n_ctx=_read_int("PHI3_N_CTX", 4096),
-            max_tokens=_read_int("PHI3_MAX_TOKENS", 768),
+            max_tokens=_read_int("PHI3_MAX_TOKENS", 1024),
             temperature=_read_float("PHI3_TEMPERATURE", 0.0),
             n_gpu_layers=_read_int("PHI3_N_GPU_LAYERS", -1),
             max_review_rounds=_read_int("ARCHITECTURE_MAX_REVIEW_ROUNDS", 2),

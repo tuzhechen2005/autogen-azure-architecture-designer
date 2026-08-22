@@ -25,6 +25,7 @@ from autogen_core.models import (
     UserMessage,
 )
 from .config import AppConfig
+from .schemas import ArchitecturePlan, ArchitectureReview
 
 
 if TYPE_CHECKING:
@@ -48,6 +49,34 @@ class _LocalModelOperationAborted(RuntimeError):
 
 
 _PHI3_PROTOCOL_TOKEN = re.compile(r"<\|[A-Za-z0-9_.:-]+\|>")
+_STRUCTURED_GRAMMAR_LOCK = threading.Lock()
+_STRUCTURED_GRAMMARS: dict[type[ArchitecturePlan] | type[ArchitectureReview], object] = {}
+
+_JSON_GRAMMAR_COMMON = r'''
+ws ::= [ \t\n\r]*
+string ::= "\"" char* "\""
+char ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+integer ::= "-"? [0-9]+
+strings ::= "[" ws (string ("," ws string)*)? "]" ws
+'''
+
+_PLAN_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
+root ::= "{" ws "\"title\"" ws ":" ws string "," ws "\"summary\"" ws ":" ws string "," ws "\"revision\"" ws ":" ws integer "," ws "\"assumptions\"" ws ":" ws strings "," ws "\"resources\"" ws ":" ws resources "," ws "\"data_flow\"" ws ":" ws strings "," ws "\"high_availability_strategy\"" ws ":" ws strings "," ws "\"security_strategy\"" ws ":" ws strings "," ws "\"operations_strategy\"" ws ":" ws strings "," ws "\"cost_notes\"" ws ":" ws strings "}" ws
+resources ::= "[" ws resource ("," ws resource)* "]" ws
+resource ::= "{" ws "\"name\"" ws ":" ws string "," ws "\"resource_type\"" ws ":" ws string "," ws "\"region\"" ws ":" ws string "," ws "\"sku\"" ws ":" ws string "," ws "\"purpose\"" ws ":" ws string "," ws "\"high_availability\"" ws ":" ws strings "," ws "\"depends_on\"" ws ":" ws strings "}" ws
+'''
+
+_REVIEW_GRAMMAR = _JSON_GRAMMAR_COMMON + r'''
+root ::= "{" ws "\"decision\"" ws ":" ws decision "," ws "\"summary\"" ws ":" ws string "," ws "\"strengths\"" ws ":" ws strings "," ws "\"findings\"" ws ":" ws findings "," ws "\"required_changes\"" ws ":" ws changes "}" ws
+decision ::= "\"approved\"" | "\"revision_required\""
+findings ::= "[" ws (finding ("," ws finding)*)? "]" ws
+finding ::= "{" ws "\"severity\"" ws ":" ws severity "," ws "\"category\"" ws ":" ws string "," ws "\"issue\"" ws ":" ws string "," ws "\"recommendation\"" ws ":" ws string "}" ws
+severity ::= "\"critical\"" | "\"high\"" | "\"medium\"" | "\"low\""
+changes ::= "[" ws (change ("," ws change)*)? "]" ws
+change ::= "{" ws "\"description\"" ws ":" ws string "," ws "\"target_field\"" ws ":" ws target "," ws "\"resource_name\"" ws ":" ws nullable_string "," ws "\"required_terms\"" ws ":" ws strings "}" ws
+target ::= "\"resource.high_availability\"" | "\"resource.sku\"" | "\"resource.region\"" | "\"resource.purpose\"" | "\"plan.high_availability_strategy\"" | "\"plan.security_strategy\"" | "\"plan.operations_strategy\""
+nullable_string ::= string | "null"
+'''
 
 
 def _reject_phi3_protocol_tokens(content: str) -> None:
@@ -107,6 +136,40 @@ def _render_phi3_prompt(messages: Sequence[LLMMessage]) -> str:
         parts.append(f"<|{role}|>\n{item['content']}<|end|>\n")
     parts.append("<|assistant|>\n")
     return "".join(parts)
+
+
+def _schema_for_messages(
+    messages: Sequence[LLMMessage],
+) -> type[ArchitecturePlan] | type[ArchitectureReview] | None:
+    """Select a grammar only for our trusted, fixed-role agent system prompts."""
+
+    for message in messages:
+        if not isinstance(message, SystemMessage):
+            continue
+        content = _content_to_text(message.content)
+        if content.startswith("You are PlannerAgent,"):
+            return ArchitecturePlan
+        if content.startswith("You are ReviewerAgent,"):
+            return ArchitectureReview
+    return None
+
+
+def _structured_grammar(
+    schema: type[ArchitecturePlan] | type[ArchitectureReview],
+) -> object:
+    """Build and cache llama.cpp's JSON-schema grammar for trusted schemas only."""
+
+    with _STRUCTURED_GRAMMAR_LOCK:
+        grammar = _STRUCTURED_GRAMMARS.get(schema)
+        if grammar is None:
+            from llama_cpp import LlamaGrammar
+
+            grammar = LlamaGrammar.from_string(
+                _PLAN_GRAMMAR if schema is ArchitecturePlan else _REVIEW_GRAMMAR,
+                verbose=False,
+            )
+            _STRUCTURED_GRAMMARS[schema] = grammar
+        return grammar
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +473,8 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
         )
         if max_tokens < 1:
             raise LocalModelProtocolError("max_tokens must be at least 1")
+        schema = _schema_for_messages(messages)
+        grammar = _structured_grammar(schema) if schema is not None else None
         try:
             prompt_tokens = await await_runtime_operation(
                 lambda: self._runtime.count_tokens(prompt, should_abort=should_abort)
@@ -436,6 +501,7 @@ class LlamaCppChatCompletionClient(ChatCompletionClient):
                     ),
                     top_p=float(extra_create_args.get("top_p", 1.0)),
                     stop=extra_create_args.get("stop", ["<|end|>"]),
+                    grammar=grammar,
                     seed=self._config.seed,
                     echo=False,
                 )

@@ -81,6 +81,32 @@ APPROVED = {
 
 
 class RevisionTransitionTests(unittest.TestCase):
+    def test_retries_invalid_or_truncated_planner_json_without_repairing_it(self) -> None:
+        base = initial_plan()
+        invalid_with_ran = json.dumps(base, ensure_ascii=False).replace(
+            '"name": "api"', 'ran\n"name": "api"', 1
+        )
+        truncated = json.dumps(base, ensure_ascii=False)[:-12]
+        for invalid in (invalid_with_ran, truncated):
+            with self.subTest(invalid=invalid[:20]):
+                client = ScriptedModelClient(
+                    [
+                        invalid,
+                        json.dumps(base, ensure_ascii=False),
+                        json.dumps(APPROVED, ensure_ascii=False),
+                    ]
+                )
+                result = asyncio.run(
+                    ArchitectureOrchestrator(
+                        client,
+                        max_review_rounds=1,
+                        max_parse_retries=1,
+                    ).run(REQUIREMENT)
+                )
+                self.assertEqual(result.status, RunStatus.COMPLETED)
+                self.assertIsNone(result.messages[0].parsed_content)
+                self.assertEqual(result.messages[1].parsed_content["revision"], 1)
+
     def test_rejects_identity_dependency_and_noop_revisions(self) -> None:
         base = initial_plan()
         cases: dict[str, dict[str, object]] = {}
