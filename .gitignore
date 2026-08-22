@@ -27,10 +27,7 @@ models/
 *.bin
 
 # Runtime output
-results/*.json
-results/*.jsonl
-results/*.log
-results/*.md
+results/**
 !results/README.md
 
 # Streamlit local settings

@@ -8,11 +8,16 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.config import AppConfig, ConfigurationError
+from src.config import AppConfig, ConfigurationError, trusted_model_root_from_env
 from src.local_model_client import LlamaCppChatCompletionClient
 from src.orchestrator import ArchitectureOrchestrator, CollaborationEvent, EventType
-from src.schemas import ArchitectureRunResult, RunStatus, TerminationReason
-from src.trace_writer import append_trace
+from src.schemas import (
+    ArchitectureRequest,
+    ArchitectureRunResult,
+    RunStatus,
+    TerminationReason,
+)
+from src.trace_writer import save_trace
 from src.ui import render_result, render_transcript_message
 
 
@@ -34,7 +39,6 @@ st.set_page_config(
 )
 
 
-@st.cache_resource(show_spinner=False)
 def load_local_model(
     model_path: str,
     n_ctx: int,
@@ -42,10 +46,11 @@ def load_local_model(
     temperature: float,
     n_gpu_layers: int,
 ) -> LlamaCppChatCompletionClient:
-    """Load one local model per stable configuration for Streamlit reruns."""
+    """Create a per-run client backed by the process's bounded model registry."""
 
     config = AppConfig(
         model_path=Path(model_path).expanduser(),
+        model_root=trusted_model_root_from_env(),
         n_ctx=n_ctx,
         max_tokens=max_tokens,
         temperature=temperature,
@@ -83,7 +88,7 @@ def render_sidebar() -> dict[str, object]:
             options=("Apple Metal", "CPU"),
             horizontal=True,
         )
-        save_trace = st.checkbox("保存本地 JSONL 运行记录", value=False)
+        save_trace_enabled = st.checkbox("保存脱敏的本地运行记录", value=False)
         st.divider()
         st.caption(
             "本地模型会占用约 3–5 GiB 内存。首次生成前才会加载。"
@@ -93,7 +98,7 @@ def render_sidebar() -> dict[str, object]:
         "max_rounds": max_rounds,
         "max_tokens": max_tokens,
         "n_gpu_layers": -1 if backend == "Apple Metal" else 0,
-        "save_trace": save_trace,
+        "save_trace": save_trace_enabled,
     }
 
 
@@ -101,6 +106,7 @@ def run_architecture(
     requirements: str,
     settings: dict[str, object],
 ) -> ArchitectureRunResult:
+    request = ArchitectureRequest(requirements=requirements)
     model_path = str(settings["model_path"]).strip()
     if not model_path:
         raise ConfigurationError("请先在侧边栏填写 Phi-3 GGUF 绝对路径。")
@@ -123,20 +129,15 @@ def run_architecture(
             with live_messages:
                 render_transcript_message(event.message, show_raw=False)
         elif event.event_type is EventType.ERROR:
-            status_box.update(label=event.text, state="error", expanded=True)
-        elif event.event_type is EventType.COMPLETED:
-            approved = (
-                event.result is not None
-                and event.result.termination_reason is TerminationReason.APPROVED
-            )
             status_box.update(
-                label=(
-                    "审查通过，架构方案已完成。"
-                    if approved
-                    else "已达到轮次上限，返回最新方案和未解决意见。"
-                ),
-                state="complete",
-                expanded=False,
+                label="架构生成失败，请查看下方错误详情。",
+                state="error",
+                expanded=True,
+            )
+        elif event.event_type is EventType.COMPLETED:
+            status_box.update(
+                label="方案已生成，正在确认本次运行记录……",
+                state="running",
             )
 
     orchestrator = ArchitectureOrchestrator(
@@ -144,9 +145,26 @@ def run_architecture(
         max_review_rounds=int(settings["max_rounds"]),
         event_sink=on_event,
     )
-    result = asyncio.run(orchestrator.run(requirements))
+    result = asyncio.run(orchestrator.run(request.requirements))
     if bool(settings["save_trace"]):
-        append_trace(result, Path("results/architecture_runs.jsonl"))
+        try:
+            save_trace(result, Path("results/architecture_runs"))
+        except Exception:
+            st.warning(
+                "方案已生成，但本地运行记录保存失败；当前方案仍可正常查看。",
+                icon="⚠️",
+            )
+    if result.status is RunStatus.COMPLETED:
+        approved = result.termination_reason is TerminationReason.APPROVED
+        status_box.update(
+            label=(
+                "审查通过，架构方案已完成。"
+                if approved
+                else "已达到轮次上限，返回最新方案和未解决意见。"
+            ),
+            state="complete",
+            expanded=False,
+        )
     return result
 
 
@@ -173,19 +191,27 @@ def main() -> None:
     if clear:
         st.session_state.architecture_result = None
     if generate:
+        # A new attempt immediately invalidates the previously displayed result.
+        # If setup or inference fails, the old success must not look like the
+        # answer to the new requirements.
+        st.session_state.architecture_result = None
         try:
             result = run_architecture(requirements, settings)
-            st.session_state.architecture_result = result.model_dump(mode="json")
+            st.session_state.architecture_result = result.model_dump()
         except (ConfigurationError, ValueError) as exc:
-            st.error(str(exc), icon="⚠️")
+            st.error("无法开始本次运行。", icon="⚠️")
+            st.code(str(exc), language=None)
         except Exception as exc:
-            st.error(f"本地运行失败：{type(exc).__name__}: {exc}", icon="⚠️")
+            st.error("本地运行失败。", icon="⚠️")
+            st.code(f"{type(exc).__name__}: {exc}", language=None)
 
     stored = st.session_state.architecture_result
     if stored is not None:
         result = ArchitectureRunResult.model_validate(stored)
         if result.status is RunStatus.FAILED:
-            st.error(result.error or "架构生成失败。")
+            st.error("架构生成失败。")
+            if result.error:
+                st.code(result.error, language=None)
         render_result(result)
 
 

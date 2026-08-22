@@ -26,76 +26,51 @@ def _strip_outer_fence(raw: str) -> str:
     return match.group("body") if match else raw.strip()
 
 
+def _reject_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise StructuredOutputError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def extract_json_object(raw: str) -> dict[str, object]:
-    """Extract exactly one top-level JSON object with bounded surface tolerance."""
+    """Decode exactly one complete top-level JSON object."""
 
     if not isinstance(raw, str) or not raw.strip():
         raise StructuredOutputError("model output is empty")
 
     text = _strip_outer_fence(raw)
-    object_start = text.find("{")
-    if object_start < 0:
-        raise StructuredOutputError("model output does not contain a JSON object")
-
-    decoder = json.JSONDecoder()
     try:
-        value, end = decoder.raw_decode(text[object_start:])
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except StructuredOutputError:
+        raise
     except json.JSONDecodeError as exc:
         raise StructuredOutputError(
             f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
         ) from exc
 
-    suffix = text[object_start + end :].strip()
-    prefix = text[:object_start].strip()
-    if any(marker in prefix + suffix for marker in ("{", "}")):
-        raise StructuredOutputError("model output contains more than one JSON object")
     if not isinstance(value, dict):
         raise StructuredOutputError("top-level model output must be a JSON object")
     return value
 
 
 def parse_structured_output(raw: str, schema: type[SchemaT]) -> SchemaT:
-    """Parse one model response and validate it against a Pydantic schema.
+    """Strictly decode a complete response and validate it without repair."""
 
-    Short surrounding prose is ignored because Phi-3 may append a note after an
-    otherwise valid object. The object itself is never repaired or rewritten.
-    """
-
+    extract_json_object(raw)
     text = _strip_outer_fence(raw)
-    decoder = json.JSONDecoder()
-    valid: list[SchemaT] = []
-    validation_errors: list[ValidationError] = []
-    for position, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[position:])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict):
-            continue
-        try:
-            valid.append(schema.model_validate(value))
-        except ValidationError as exc:
-            validation_errors.append(exc)
-
-    if len(valid) == 1:
-        return valid[0]
-    if len(valid) > 1:
-        raise StructuredOutputError(
-            "model output contains multiple schema-valid JSON objects"
-        )
-    if validation_errors:
-        exc = validation_errors[0]
+    try:
+        return schema.model_validate_json(text)
+    except ValidationError as exc:
         details = "; ".join(
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
             for error in exc.errors(include_url=False)
         )
         raise StructuredOutputError(f"schema validation failed: {details}") from exc
-
-    # Preserve the most specific JSON syntax error from the first object.
-    extract_json_object(raw)
-    raise StructuredOutputError("model output contains no schema-valid JSON object")
 
 
 def compact_json(model: BaseModel) -> str:

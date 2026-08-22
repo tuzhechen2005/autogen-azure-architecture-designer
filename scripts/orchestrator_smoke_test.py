@@ -45,7 +45,9 @@ REVIEW_1 = """{
 "decision":"revision_required","summary":"The API has a single point of failure.",
 "strengths":[],"findings":[{"severity":"high","category":"compute",
 "issue":"Only one API instance is present.","recommendation":"Use two instances."}],
-"required_changes":["Use at least two API instances"]}
+"required_changes":[{"description":"Use at least two API instances",
+"target_field":"resource.high_availability","resource_name":"api",
+"required_terms":["two instances"]}]}
 """
 
 PLAN_2 = """{

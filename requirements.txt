@@ -3,8 +3,12 @@ autogen-agentchat==0.7.5
 autogen-core==0.7.5
 
 # Local Phi-3 GGUF inference. Apple Silicon installation notes are in README.md.
-llama-cpp-python==0.3.34
+llama-cpp-python==0.3.35
 
 # Web interface and structured application data.
-streamlit==1.48.1
+streamlit==1.54.0
 pydantic==2.11.7
+pillow==12.3.0
+
+# Offline regression test runner used by the acceptance workflow.
+pytest==9.0.3

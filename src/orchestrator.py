@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from time import monotonic
 from typing import TypeVar
 from uuid import uuid4
 
 from autogen_agentchat.agents import AssistantAgent
+from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .agents import create_architecture_agents
 from .output_parser import StructuredOutputError, parse_structured_output
@@ -32,6 +35,85 @@ from .schemas import (
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 EventSink = Callable[["CollaborationEvent"], None]
+
+
+def _revision_target_text(
+    plan: ArchitecturePlan,
+    target_field: str,
+    resource_name: str | None,
+) -> str:
+    scope, field_name = target_field.split(".", 1)
+    if scope == "resource":
+        resource = next(
+            (
+                candidate
+                for candidate in plan.resources
+                if candidate.name == resource_name
+            ),
+            None,
+        )
+        if resource is None:
+            raise StructuredOutputError(
+                f"revision constraint targets unknown resource: {resource_name}"
+            )
+        value = getattr(resource, field_name)
+    else:
+        value = getattr(plan, field_name)
+    if isinstance(value, list):
+        return "\n".join(value).casefold()
+    return str(value).casefold()
+
+
+def validate_revision_transition(
+    previous: ArchitecturePlan,
+    revised: ArchitecturePlan,
+    review: ArchitectureReview,
+) -> None:
+    """Enforce immutable identity and every machine-verifiable review change."""
+
+    if revised.revision != previous.revision + 1:
+        raise StructuredOutputError(
+            "schema validation failed: revision must increment by exactly one"
+        )
+
+    previous_by_name = {resource.name: resource for resource in previous.resources}
+    revised_by_name = {resource.name: resource for resource in revised.resources}
+    if previous_by_name.keys() != revised_by_name.keys():
+        raise StructuredOutputError(
+            "revision must preserve the resource names and resource count"
+        )
+
+    for name, previous_resource in previous_by_name.items():
+        revised_resource = revised_by_name[name]
+        if revised_resource.resource_type != previous_resource.resource_type:
+            raise StructuredOutputError(
+                f"revision must preserve resource type for {name}"
+            )
+        if set(revised_resource.depends_on) != set(previous_resource.depends_on):
+            raise StructuredOutputError(
+                f"revision must preserve dependency relationships for {name}"
+            )
+
+    if previous.model_dump(exclude={"revision"}) == revised.model_dump(
+        exclude={"revision"}
+    ):
+        raise StructuredOutputError(
+            "revision must make a substantive change beyond its revision number"
+        )
+
+    for change in review.required_changes:
+        target_text = _revision_target_text(
+            revised,
+            change.target_field,
+            change.resource_name,
+        )
+        missing_terms = [
+            term for term in change.required_terms if term.casefold() not in target_text
+        ]
+        if missing_terms:
+            raise StructuredOutputError(
+                f"revision did not satisfy required change: {change.description}"
+            )
 
 
 class EventType(str, Enum):
@@ -61,15 +143,19 @@ class ArchitectureOrchestrator:
         *,
         max_review_rounds: int = 2,
         max_parse_retries: int = 1,
+        max_run_seconds: float = 600.0,
         event_sink: EventSink | None = None,
     ) -> None:
         if not 1 <= max_review_rounds <= 5:
             raise ValueError("max_review_rounds must be between 1 and 5")
         if not 0 <= max_parse_retries <= 2:
             raise ValueError("max_parse_retries must be between 0 and 2")
+        if not 0.01 <= max_run_seconds <= 3600.0:
+            raise ValueError("max_run_seconds must be between 0.01 and 3600")
         self._model_client = model_client
         self._max_review_rounds = max_review_rounds
         self._max_parse_retries = max_parse_retries
+        self._max_run_seconds = max_run_seconds
         self._event_sink = event_sink
 
     def _emit(self, event: CollaborationEvent) -> None:
@@ -101,11 +187,30 @@ class ArchitectureOrchestrator:
         review_round: int,
         transcript: list[TranscriptMessage],
         expected_revision: int | None = None,
+        previous_plan: ArchitecturePlan | None = None,
+        prior_review: ArchitectureReview | None = None,
+        run_deadline: float,
     ) -> SchemaT:
         next_task = task
         last_error: StructuredOutputError | None = None
         for attempt in range(self._max_parse_retries + 1):
-            result = await agent.run(task=next_task)
+            remaining_seconds = run_deadline - monotonic()
+            if remaining_seconds <= 0:
+                raise TimeoutError("Architecture run exceeded its wall-clock timeout")
+            cancellation_token = CancellationToken()
+            try:
+                result = await asyncio.wait_for(
+                    agent.run(
+                        task=next_task,
+                        cancellation_token=cancellation_token,
+                    ),
+                    timeout=remaining_seconds,
+                )
+            except TimeoutError as exc:
+                cancellation_token.cancel()
+                raise TimeoutError(
+                    "Architecture run exceeded its wall-clock timeout"
+                ) from exc
             raw_content = self._last_content(result)
             try:
                 parsed = parse_structured_output(raw_content, schema)
@@ -118,6 +223,12 @@ class ArchitectureOrchestrator:
                         "schema validation failed: revision must equal "
                         f"{expected_revision}, got {parsed.revision}"
                     )
+                if previous_plan is not None and prior_review is not None:
+                    if not isinstance(parsed, ArchitecturePlan):
+                        raise StructuredOutputError(
+                            "revision transition requires an architecture plan"
+                        )
+                    validate_revision_transition(previous_plan, parsed, prior_review)
             except StructuredOutputError as exc:
                 last_error = exc
                 failed_message = TranscriptMessage(
@@ -175,22 +286,23 @@ class ArchitectureOrchestrator:
     async def run(self, requirements: str) -> ArchitectureRunResult:
         """Run planning and review until approval or the configured round limit."""
 
-        request = ArchitectureRequest(requirements=requirements)
         run_id = uuid4().hex
         started_at = datetime.now(timezone.utc)
+        run_deadline = monotonic() + self._max_run_seconds
+        request: ArchitectureRequest | None = None
         transcript: list[TranscriptMessage] = []
         plan: ArchitecturePlan | None = None
         review: ArchitectureReview | None = None
         rounds_completed = 0
 
-        self._emit(
-            CollaborationEvent(
-                event_type=EventType.STATUS,
-                text="Planner is creating the initial architecture.",
-            )
-        )
-
         try:
+            request = ArchitectureRequest(requirements=requirements)
+            self._emit(
+                CollaborationEvent(
+                    event_type=EventType.STATUS,
+                    text="Planner is creating the initial architecture.",
+                )
+            )
             agents = create_architecture_agents(self._model_client)
             plan = await self._run_structured_agent(
                 agent=agents.planner,
@@ -201,6 +313,7 @@ class ArchitectureOrchestrator:
                 review_round=0,
                 transcript=transcript,
                 expected_revision=1,
+                run_deadline=run_deadline,
             )
 
             for review_round in range(1, self._max_review_rounds + 1):
@@ -220,6 +333,7 @@ class ArchitectureOrchestrator:
                     phase=MessagePhase.REVIEW,
                     review_round=review_round,
                     transcript=transcript,
+                    run_deadline=run_deadline,
                 )
                 rounds_completed = review_round
 
@@ -266,6 +380,9 @@ class ArchitectureOrchestrator:
                         review_round=review_round,
                         transcript=transcript,
                         expected_revision=plan.revision + 1,
+                        previous_plan=plan,
+                        prior_review=review,
+                        run_deadline=run_deadline,
                     )
 
             result = self._build_result(
@@ -292,6 +409,11 @@ class ArchitectureOrchestrator:
             )
             return result
         except Exception as exc:
+            error = (
+                "Invalid architecture requirements"
+                if request is None and isinstance(exc, ValidationError)
+                else f"{type(exc).__name__}: {exc}"
+            )
             result = self._build_result(
                 run_id=run_id,
                 request=request,
@@ -302,7 +424,7 @@ class ArchitectureOrchestrator:
                 transcript=transcript,
                 rounds_completed=rounds_completed,
                 started_at=started_at,
-                error=f"{type(exc).__name__}: {exc}",
+                error=error,
             )
             self._emit(
                 CollaborationEvent(
@@ -318,7 +440,7 @@ class ArchitectureOrchestrator:
     def _build_result(
         *,
         run_id: str,
-        request: ArchitectureRequest,
+        request: ArchitectureRequest | None,
         status: RunStatus,
         termination_reason: TerminationReason,
         plan: ArchitecturePlan | None,

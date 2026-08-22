@@ -2,23 +2,45 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
-    """Base model that rejects invented fields and normalizes whitespace."""
+    """Base model that rejects invented fields, coercion, and unsafe whitespace."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+    )
 
 
 class ArchitectureRequest(StrictModel):
     """A user's local architecture-design request."""
 
     requirements: str = Field(min_length=10, max_length=6000)
+
+    @field_validator("requirements", mode="before")
+    @classmethod
+    def normalize_visible_requirements(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = unicodedata.normalize("NFKC", value)
+        allowed_controls = {"\n", "\r", "\t"}
+        for character in normalized:
+            if (
+                unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                and character not in allowed_controls
+            ):
+                raise ValueError("requirements contain disallowed control characters")
+        if not any(not character.isspace() for character in normalized):
+            raise ValueError("requirements must contain visible characters")
+        return normalized
 
 
 class AzureResource(StrictModel):
@@ -27,10 +49,10 @@ class AzureResource(StrictModel):
     name: str = Field(min_length=2, max_length=80)
     resource_type: str = Field(min_length=3, max_length=120)
     region: str = Field(min_length=2, max_length=60)
-    sku: str = Field(default="TBD", min_length=1, max_length=80)
+    sku: str = Field(min_length=1, max_length=80)
     purpose: str = Field(min_length=2, max_length=500)
-    high_availability: list[str] = Field(default_factory=list, max_length=8)
-    depends_on: list[str] = Field(default_factory=list, max_length=12)
+    high_availability: list[str] = Field(max_length=8)
+    depends_on: list[str] = Field(max_length=12)
 
 
 class ArchitecturePlan(StrictModel):
@@ -38,38 +60,59 @@ class ArchitecturePlan(StrictModel):
 
     title: str = Field(min_length=3, max_length=160)
     summary: str = Field(min_length=10, max_length=1200)
-    revision: int = Field(default=1, ge=1, le=10)
-    assumptions: list[str] = Field(default_factory=list, max_length=12)
+    revision: int = Field(ge=1, le=10)
+    assumptions: list[str] = Field(max_length=12)
     resources: list[AzureResource] = Field(min_length=1, max_length=24)
     data_flow: list[str] = Field(min_length=1, max_length=16)
     high_availability_strategy: list[str] = Field(min_length=1, max_length=16)
-    security_strategy: list[str] = Field(default_factory=list, max_length=16)
-    operations_strategy: list[str] = Field(default_factory=list, max_length=16)
-    cost_notes: list[str] = Field(default_factory=list, max_length=12)
+    security_strategy: list[str] = Field(max_length=16)
+    operations_strategy: list[str] = Field(max_length=16)
+    cost_notes: list[str] = Field(max_length=12)
 
-    @model_validator(mode="before")
-    @classmethod
-    def wrap_scalar_strategy_items(cls, data: object) -> object:
-        """Preserve a scalar strategy value as a one-item list when necessary."""
+    @model_validator(mode="after")
+    def dependency_graph_is_valid(self) -> "ArchitecturePlan":
+        names = [resource.name for resource in self.resources]
+        if len(names) != len(set(names)):
+            raise ValueError("resource names must be unique")
 
-        if not isinstance(data, dict):
-            return data
-        list_fields = (
-            "assumptions",
-            "data_flow",
-            "high_availability_strategy",
-            "security_strategy",
-            "operations_strategy",
-            "cost_notes",
-        )
-        normalized = dict(data)
-        changed = False
-        for field_name in list_fields:
-            value = normalized.get(field_name)
-            if isinstance(value, str) and value.strip():
-                normalized[field_name] = [value]
-                changed = True
-        return normalized if changed else data
+        known_names = set(names)
+        graph: dict[str, tuple[str, ...]] = {}
+        for resource in self.resources:
+            dependencies = tuple(resource.depends_on)
+            if len(dependencies) != len(set(dependencies)):
+                raise ValueError(
+                    f"resource {resource.name} contains duplicate dependencies"
+                )
+            if resource.name in dependencies:
+                raise ValueError(
+                    f"resource {resource.name} cannot depend on itself"
+                )
+            unknown = set(dependencies) - known_names
+            if unknown:
+                raise ValueError(
+                    f"resource {resource.name} has unknown dependencies: "
+                    f"{sorted(unknown)}"
+                )
+            graph[resource.name] = dependencies
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visiting:
+                raise ValueError("resource dependency graph contains a cycle")
+            if name in visited:
+                return
+            visiting.add(name)
+            for dependency in graph[name]:
+                visit(dependency)
+            visiting.remove(name)
+            visited.add(name)
+
+        for name in names:
+            visit(name)
+        return self
+
 
 class ReviewDecision(str, Enum):
     APPROVED = "approved"
@@ -77,6 +120,16 @@ class ReviewDecision(str, Enum):
 
 
 ReviewSeverity = Literal["critical", "high", "medium", "low"]
+RevisionTargetField = Literal[
+    "resource.high_availability",
+    "resource.sku",
+    "resource.region",
+    "resource.purpose",
+    "plan.high_availability_strategy",
+    "plan.security_strategy",
+    "plan.operations_strategy",
+]
+RequiredTerm = Annotated[str, Field(min_length=1, max_length=80)]
 
 
 class ReviewFinding(StrictModel):
@@ -88,44 +141,37 @@ class ReviewFinding(StrictModel):
     recommendation: str = Field(min_length=5, max_length=600)
 
 
+class RequiredChange(StrictModel):
+    """A reviewer correction with a bounded, machine-verifiable plan target."""
+
+    description: str = Field(min_length=5, max_length=600)
+    target_field: RevisionTargetField
+    resource_name: str | None
+    required_terms: list[RequiredTerm] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def target_matches_resource_scope(self) -> "RequiredChange":
+        targets_resource = self.target_field.startswith("resource.")
+        if targets_resource and self.resource_name is None:
+            raise ValueError("resource targets require resource_name")
+        if not targets_resource and self.resource_name is not None:
+            raise ValueError("plan targets cannot contain resource_name")
+        return self
+
+
 class ArchitectureReview(StrictModel):
     """The reviewer's structured high-availability verdict."""
 
     decision: ReviewDecision
     summary: str = Field(min_length=10, max_length=1000)
-    strengths: list[str] = Field(default_factory=list, max_length=12)
-    findings: list[ReviewFinding] = Field(default_factory=list, max_length=16)
-    required_changes: list[str] = Field(default_factory=list, max_length=12)
-
-    @model_validator(mode="before")
-    @classmethod
-    def derive_missing_required_changes(cls, data: object) -> object:
-        """Copy existing recommendations into the summary list when Phi-3 omits it."""
-
-        if not isinstance(data, dict):
-            return data
-        if data.get("decision") != ReviewDecision.REVISION_REQUIRED.value:
-            return data
-        if data.get("required_changes"):
-            return data
-        findings = data.get("findings")
-        if not isinstance(findings, list):
-            return data
-        recommendations = [
-            finding.get("recommendation")
-            for finding in findings
-            if isinstance(finding, dict)
-            and isinstance(finding.get("recommendation"), str)
-            and finding["recommendation"].strip()
-        ]
-        if not recommendations:
-            return data
-        normalized = dict(data)
-        normalized["required_changes"] = recommendations
-        return normalized
+    strengths: list[str] = Field(max_length=12)
+    findings: list[ReviewFinding] = Field(max_length=16)
+    required_changes: list[RequiredChange] = Field(max_length=3)
 
     @model_validator(mode="after")
     def decision_matches_required_changes(self) -> "ArchitectureReview":
+        if self.decision is ReviewDecision.APPROVED and self.findings:
+            raise ValueError("approved reviews cannot contain findings")
         if self.decision is ReviewDecision.APPROVED and self.required_changes:
             raise ValueError("approved reviews cannot contain required_changes")
         if (
@@ -174,7 +220,7 @@ class ArchitectureRunResult(StrictModel):
     """Complete local output returned to Streamlit and optional trace storage."""
 
     run_id: str = Field(min_length=8, max_length=80)
-    request: ArchitectureRequest
+    request: ArchitectureRequest | None
     status: RunStatus
     termination_reason: TerminationReason
     final_plan: ArchitecturePlan | None = None
@@ -184,3 +230,9 @@ class ArchitectureRunResult(StrictModel):
     started_at: datetime
     finished_at: datetime
     error: str | None = None
+
+    @model_validator(mode="after")
+    def completed_run_has_request(self) -> "ArchitectureRunResult":
+        if self.status is RunStatus.COMPLETED and self.request is None:
+            raise ValueError("completed runs require a validated request")
+        return self

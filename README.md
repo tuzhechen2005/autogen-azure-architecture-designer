@@ -11,7 +11,7 @@
 - 调度器显式传递已校验的方案与审查 JSON，完成有限轮次的“规划—审查—修订—再审”闭环。
 - 输出使用 Pydantic 校验，错误格式只进行有限纠正，不导致无限对话。
 - Streamlit 按智能体步骤更新进度，展示资源表、架构策略、审查问题和全部角色消息。
-- 可选将完整运行写入本地 JSONL，默认不纳入 Git。
+- 可选将脱敏运行元数据写入每个 run 独立的本地 JSON，默认不纳入 Git。
 
 ## 协作流程
 
@@ -38,7 +38,7 @@ flowchart LR
 - Python 3.11.15
 - Phi-3 Mini 4K Instruct Q4 GGUF
 - AutoGen AgentChat/Core 0.7.5
-- `llama-cpp-python` 0.3.34
+- `llama-cpp-python` 0.3.35（官方 sdist + 本仓库安全补丁）
 - Streamlit 1.48.1
 
 建议预留至少 5 GiB 磁盘空间和 6 GiB 可用内存。模型文件约 2.2 GiB，不包含在仓库中。
@@ -51,16 +51,32 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-Apple Silicon 建议先从源码编译带 Metal 支持的 `llama-cpp-python`：
+Apple Silicon 分两步安装。先从官方 sdist 构建带 Metal 支持、且已移除
+`diskcache` 的 `llama-cpp-python`，再用完整哈希锁文件安装其余依赖。
+
+`llama-cpp-python` 的上游包元数据强制依赖 `diskcache`，而 `diskcache` 的
+pickle 持久化受 CVE-2025-69872 影响且**没有任何已修复版本**（5.6.3 既是最新版
+也是受影响版本）。因此本仓库在官方源码上应用
+`packaging/patches/llama-cpp-python-0.3.35-remove-diskcache.patch`，移除该强制
+依赖与 pickle 磁盘缓存实现，同时保留 `Llama` API、`LlamaRAMCache` 与
+Metal/CPU 推理能力。下面的脚本会校验官方 sdist 与补丁两者的 SHA-256：
 
 ```bash
 CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_APPLE_SILICON_PROCESSOR=arm64 -DGGML_METAL=on" \
-python -m pip install --no-binary=llama-cpp-python llama-cpp-python==0.3.34
+packaging/build_llama_cpp_python.sh dist/wheels
 
-python -m pip install -r requirements.txt
+python -m pip install dist/wheels/llama_cpp_python-*.whl
+
+python -m pip install --require-hashes -r requirements.lock
 ```
 
+`dist/wheels` 只是本地构建产物，不纳入版本控制。构建脚本会在补丁应用后再次
+检查源码中不存在 `diskcache` 引用，任何残留都会让构建失败。
+
 如默认 PyPI 在当前网络不可达，可在上述 `pip install` 命令中临时增加可信的 `--index-url`；仓库不强制绑定镜像。
+`requirements.txt` 是人工维护的直接依赖输入；`requirements.lock` 是 Python 3.11 的完整
+传递依赖与 SHA-256 锁。锁文件使用 `pip 25.3`、`pip-tools 7.5.2` 生成，并已在
+macOS Apple Silicon 的全新虚拟环境中完成 Metal 源码构建、`pip check` 和离线测试。
 
 ## 准备 Phi-3 模型
 
@@ -77,9 +93,14 @@ hf download microsoft/Phi-3-mini-4k-instruct-gguf \
 
 ```bash
 export PHI3_MODEL_PATH="/absolute/path/to/Phi-3-mini-4k-instruct-q4.gguf"
+export PHI3_MODEL_ROOT="/absolute/path/to"
+export PHI3_INFERENCE_TIMEOUT_SECONDS=120
 ```
 
-也可在 Streamlit 侧边栏直接输入路径。不要将 GGUF 加入 Git。
+也可在 Streamlit 侧边栏输入 `PHI3_MODEL_ROOT` 目录内的绝对路径。模型必须是
+该目录内非符号链接的常规 `.gguf` 文件，并包含有效 GGUF 文件头。不要将 GGUF 加入 Git。
+单次本地推理默认限时 120 秒；完整架构协作默认限时 600 秒。生成前还会验证
+prompt token 与最大 completion token 之和不超过模型上下文。
 
 ## 运行 Web 应用
 
@@ -99,6 +120,7 @@ streamlit run app.py
 ```bash
 python scripts/smoke_test.py --check-config
 python scripts/orchestrator_smoke_test.py
+python -m pytest -q
 python -m compileall -q app.py src scripts
 ```
 
@@ -116,12 +138,26 @@ CPU 回退：
 PHI3_N_GPU_LAYERS=0 python scripts/smoke_test.py
 ```
 
+## 构建安全源码 ZIP
+
+先提交所有 tracked 修改，再从 Git `HEAD` 的 allowlist 构建发布包：
+
+```bash
+python scripts/build_release.py
+```
+
+脚本默认输出 `dist/autogen-azure-architecture-designer-<commit>.zip`，同时打印文件数、
+字节数和 SHA-256。它不会遍历工作目录：`.venv`、`.env`、GGUF、cache、trace、swap、
+已有 ZIP 和 `.git` 即使实际存在也不会进入包；tracked 敏感路径、符号链接、敏感内容模式、
+未提交的 tracked 修改或归档清单不一致都会让构建安全失败。
+
 ## 目录结构
 
 ```text
 .
 ├── app.py                         Streamlit 入口
-├── requirements.txt              直接依赖版本
+├── requirements.txt              人工维护的直接依赖版本
+├── requirements.lock             完整传递依赖版本与 SHA-256
 ├── src/
 │   ├── config.py                  本地模型与轮次配置
 │   ├── local_model_client.py      AutoGen ↔ llama.cpp 适配
@@ -130,7 +166,7 @@ PHI3_N_GPU_LAYERS=0 python scripts/smoke_test.py
 │   ├── output_parser.py           JSON 候选提取与校验
 │   ├── agents.py                  两个独立 AutoGen 角色
 │   ├── orchestrator.py            多轮协作、事件与终止
-│   ├── trace_writer.py            本地 JSONL 记录
+│   ├── trace_writer.py            私有、原子发布的逐 run JSON 记录
 │   └── ui.py                      Streamlit 渲染函数
 ├── scripts/                       最小冒烟与协议验证
 ├── examples/                      可复用需求示例
