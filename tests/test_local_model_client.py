@@ -157,6 +157,18 @@ class FinishReasonTests(unittest.TestCase):
                     defined.add(stripped.split("::=", 1)[0].strip())
 
                 self.assertIn("root", defined)
+                # llama.cpp's GBNF parser stops at "_" in a rule name: it
+                # reads `nullable_string` as `nullable` and then fails with
+                # "expecting newline or end at _string". The failure only
+                # surfaces at sampling time -- LlamaGrammar.from_string just
+                # stores the text -- and a null grammar segfaults the process.
+                for rule in defined:
+                    self.assertNotIn(
+                        "_",
+                        rule,
+                        f"{name} grammar rule {rule!r} must not contain '_';"
+                        " use '-' instead",
+                    )
                 # Every referenced rule must be defined, otherwise llama.cpp
                 # rejects the grammar at parse time.
                 import re

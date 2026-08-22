@@ -78,9 +78,11 @@ findings ::= "[" ws (finding ("," ws finding)*)? "]" ws
 finding ::= "{" ws "\"severity\"" ws ":" ws severity "," ws "\"category\"" ws ":" ws string "," ws "\"issue\"" ws ":" ws string "," ws "\"recommendation\"" ws ":" ws string "}" ws
 severity ::= "\"critical\"" | "\"high\"" | "\"medium\"" | "\"low\""
 changes ::= "[" ws (change ("," ws change)*)? "]" ws
-change ::= "{" ws "\"description\"" ws ":" ws string "," ws "\"target_field\"" ws ":" ws target "," ws "\"resource_name\"" ws ":" ws nullable_string "," ws "\"required_terms\"" ws ":" ws strings "}" ws
-target ::= "\"resource.high_availability\"" | "\"resource.sku\"" | "\"resource.region\"" | "\"resource.purpose\"" | "\"plan.high_availability_strategy\"" | "\"plan.security_strategy\"" | "\"plan.operations_strategy\""
-nullable_string ::= string | "null"
+change ::= "{" ws "\"description\"" ws ":" ws string "," ws "\"target_field\"" ws ":" ws (resource-change | plan-change) "," ws "\"required_terms\"" ws ":" ws strings "}" ws
+resource-change ::= resource-target "," ws "\"resource_name\"" ws ":" ws string
+plan-change ::= plan-target "," ws "\"resource_name\"" ws ":" ws "null"
+resource-target ::= "\"resource.high_availability\"" | "\"resource.sku\"" | "\"resource.region\"" | "\"resource.purpose\""
+plan-target ::= "\"plan.high_availability_strategy\"" | "\"plan.security_strategy\"" | "\"plan.operations_strategy\""
 '''
 
 
