@@ -13,6 +13,7 @@ from .schemas import (
     TerminationReason,
     TranscriptMessage,
 )
+from .topology import build_topology_dot, classify_tier
 
 
 def _bullet_list(items: list[str], *, empty_text: str = "未提供") -> None:
@@ -42,6 +43,29 @@ def render_transcript_message(
                 st.code(message.raw_content, language="json")
 
 
+def render_topology(plan: ArchitecturePlan) -> None:
+    """Draw the plan's dependency graph as an Azure topology diagram."""
+
+    st.markdown("**架构拓扑图**")
+    st.caption(
+        "按 Azure 资源分层分组；箭头方向为「被依赖资源 → 依赖它的资源」，"
+        "即数据与调用的下游流向。"
+    )
+    try:
+        dot = build_topology_dot(plan)
+    except Exception as exc:  # noqa: BLE001 - diagram must never break the page
+        st.info(
+            "拓扑图暂时无法生成，可查看下方资源清单中的「依赖」列。"
+            f"（原因：{type(exc).__name__}）"
+        )
+        return
+
+    st.graphviz_chart(dot, use_container_width=True)
+    with st.expander("查看拓扑图 DOT 源码"):
+        st.caption("可复制到 Graphviz 或粘贴进文档中重绘。")
+        st.code(dot, language="dot")
+
+
 def render_plan(plan: ArchitecturePlan) -> None:
     st.subheader("架构方案")
     st.text(plan.title)
@@ -51,9 +75,13 @@ def render_plan(plan: ArchitecturePlan) -> None:
     metric_b.metric("Azure 资源数", len(plan.resources))
     metric_c.metric("数据流步骤", len(plan.data_flow))
 
+    render_topology(plan)
+
+    st.markdown("**资源清单**")
     rows = [
         {
             "资源名称": resource.name,
+            "分层": classify_tier(resource),
             "Azure 类型": resource.resource_type,
             "区域": resource.region,
             "SKU": resource.sku,
