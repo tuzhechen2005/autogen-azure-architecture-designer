@@ -18,7 +18,12 @@ from src.schemas import (
     TerminationReason,
 )
 from src.trace_writer import save_trace
-from src.ui import render_result, render_transcript_message
+from src.ui import (
+    render_failure,
+    render_failure_text,
+    render_result,
+    render_transcript_message,
+)
 
 
 SAMPLE_REQUIREMENT = """\
@@ -199,19 +204,18 @@ def main() -> None:
             result = run_architecture(requirements, settings)
             st.session_state.architecture_result = result.model_dump()
         except (ConfigurationError, ValueError) as exc:
-            st.error("无法开始本次运行。", icon="⚠️")
-            st.code(str(exc), language=None)
+            render_failure(exc, context="无法开始本次运行")
         except Exception as exc:
-            st.error("本地运行失败。", icon="⚠️")
-            st.code(f"{type(exc).__name__}: {exc}", language=None)
+            render_failure(exc, context="本地运行失败")
 
     stored = st.session_state.architecture_result
     if stored is not None:
         result = ArchitectureRunResult.model_validate(stored)
         if result.status is RunStatus.FAILED:
-            st.error("架构生成失败。")
             if result.error:
-                st.code(result.error, language=None)
+                render_failure_text(result.error, context="架构生成失败")
+            else:
+                st.error("架构生成失败。", icon="⚠️")
         render_result(result)
 
 

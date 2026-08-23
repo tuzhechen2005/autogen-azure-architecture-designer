@@ -13,6 +13,7 @@ from .schemas import (
     TerminationReason,
     TranscriptMessage,
 )
+from .diagnostics import Diagnosis, diagnose, diagnose_text
 from .topology import build_topology_dot, classify_tier
 
 
@@ -41,6 +42,49 @@ def render_transcript_message(
         if show_raw:
             with st.expander("查看本地模型原始消息"):
                 st.code(message.raw_content, language="json")
+
+
+def _render_diagnosis(diagnosis: Diagnosis, *, context: str) -> None:
+    """Render one diagnosis as inert text with actionable steps."""
+
+    st.error(f"{context}：{diagnosis.title}", icon="⚠️")
+
+    st.markdown("**可能原因**")
+    st.text(diagnosis.cause)
+
+    if diagnosis.remedies:
+        st.markdown("**建议的排查步骤**")
+        for index, remedy in enumerate(diagnosis.remedies, start=1):
+            st.text(f"{index}. {remedy}")
+
+    if diagnosis.env_hint:
+        st.markdown("**相关环境变量**")
+        st.code(diagnosis.env_hint, language=None)
+
+
+def render_failure_text(message: str, *, context: str) -> None:
+    """Explain a stored run error that is only available as text."""
+
+    _render_diagnosis(diagnose_text(message), context=context)
+    with st.expander("查看原始错误信息（排查与反馈时请附上）"):
+        st.code(message, language=None)
+
+
+def render_failure(error: BaseException, *, context: str) -> None:
+    """Explain a failure with its cause, remedies and raw technical detail.
+
+    Model and configuration text is rendered inert, matching the rest of the UI.
+    """
+
+    diagnosis = diagnose(error)
+    _render_diagnosis(diagnosis, context=context)
+
+    with st.expander("查看原始错误信息（排查与反馈时请附上）"):
+        st.code(f"{type(error).__name__}: {error}", language=None)
+        cause = error.__cause__
+        if cause is not None:
+            st.caption("底层原因")
+            st.code(f"{type(cause).__name__}: {cause}", language=None)
 
 
 def render_topology(plan: ArchitecturePlan) -> None:
