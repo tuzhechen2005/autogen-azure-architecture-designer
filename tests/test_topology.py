@@ -55,8 +55,8 @@ class TopologyDotTests(unittest.TestCase):
 
         db_id = "res_0_db"
         api_id = "res_1_api"
-        self.assertIn(f"{db_id} -> {api_id};", dot)
-        self.assertNotIn(f"{api_id} -> {db_id};", dot)
+        self.assertIn(f'"{db_id}" -> "{api_id}";', dot)
+        self.assertNotIn(f'"{api_id}" -> "{db_id}";', dot)
 
     def test_every_resource_becomes_exactly_one_node(self) -> None:
         plan = _plan([_resource("api"), _resource("db", "Azure SQL Database")])
@@ -95,6 +95,26 @@ class TopologyDotTests(unittest.TestCase):
         self.assertIn("res_0_api_1", dot)
         self.assertIn("res_1_api_1", dot)
         self.assertEqual(dot.count("[label="), 2)
+
+    def test_chinese_resource_names_stay_readable_in_identifiers(self) -> None:
+        plan = _plan([_resource("电商数据库", "Azure SQL Database")])
+        dot = build_topology_dot(plan)
+
+        self.assertIn("电商数据库", dot)
+        self.assertNotIn("res_0______", dot)
+
+    def test_node_identifiers_are_quoted(self) -> None:
+        plan = _plan(
+            [
+                _resource("电商数据库", "Azure SQL Database"),
+                _resource("接口服务", depends_on=["电商数据库"]),
+            ]
+        )
+        dot = build_topology_dot(plan)
+
+        # Quoting keeps any slug legal DOT regardless of the characters it keeps.
+        self.assertIn('"res_0_电商数据库" [label=', dot)
+        self.assertIn('"res_0_电商数据库" -> "res_1_接口服务";', dot)
 
     def test_tiers_group_known_azure_families(self) -> None:
         self.assertEqual(

@@ -71,7 +71,10 @@ _TIER_STYLE: dict[str, tuple[str, str]] = {
     "其他": ("#f5f5f5", "#555555"),
 }
 
-_UNSAFE_ID = re.compile(r"[^0-9A-Za-z_]")
+# DOT identifiers accept alphanumerics and underscore; Unicode letters are kept
+# so Chinese resource names stay readable in the exported source. Quotes,
+# whitespace and punctuation are still replaced.
+_UNSAFE_ID = re.compile(r"[^\w]", re.UNICODE)
 
 
 def classify_tier(resource: AzureResource) -> str:
@@ -154,7 +157,7 @@ def build_topology_dot(plan: ArchitecturePlan) -> str:
             continue
         fill, border = _TIER_STYLE[tier]
         cluster_id = _UNSAFE_ID.sub("_", tier)
-        lines.append(f"  subgraph cluster_{cluster_id} {{")
+        lines.append(f'  subgraph "cluster_{cluster_id}" {{')
         lines.append(f'    label="{_escape_label(tier)}";')
         lines.append('    labeljust="l";')
         lines.append('    fontname="Helvetica";')
@@ -170,7 +173,7 @@ def build_topology_dot(plan: ArchitecturePlan) -> str:
                 )
             )
             lines.append(
-                f'    {node_ids[resource.name]} [label="{label}" '
+                f'    "{node_ids[resource.name]}" [label="{label}" '
                 f'fillcolor="{fill}" color="{border}"];'
             )
         lines.append("  }")
@@ -182,7 +185,7 @@ def build_topology_dot(plan: ArchitecturePlan) -> str:
                 # Schema validation guarantees resolvable edges; skip defensively
                 # rather than emit malformed DOT.
                 continue
-            lines.append(f"  {target} -> {node_ids[resource.name]};")
+            lines.append(f'  "{target}" -> "{node_ids[resource.name]}";')
 
     lines.append("}")
     return "\n".join(lines)
