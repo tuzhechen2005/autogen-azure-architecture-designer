@@ -50,14 +50,17 @@ class NewRunIsolationTests(unittest.TestCase):
                 return_value=old_result,
             ),
             patch.object(app, "render_result") as render_result,
+            patch.object(app, "render_failure") as render_failure,
         ):
             app.main()
 
         self.assertIsNone(state.architecture_result)
         render_result.assert_not_called()
-        fake_streamlit.error.assert_called_once_with(
-            "无法开始本次运行。",
-            icon="⚠️",
+        render_failure.assert_called_once()
+        raised = render_failure.call_args.args[0]
+        self.assertIsInstance(raised, ConfigurationError)
+        self.assertEqual(
+            render_failure.call_args.kwargs["context"], "无法开始本次运行"
         )
 
     def test_result_identifies_its_run_and_original_requirements(self) -> None:

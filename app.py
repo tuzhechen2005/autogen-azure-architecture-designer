@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -17,9 +18,17 @@ from src.schemas import (
     RunStatus,
     TerminationReason,
 )
+from src.run_log import LOGGER_NAME
 from src.trace_writer import save_trace
-from src.ui import render_result, render_transcript_message
+from src.ui import (
+    render_failure,
+    render_failure_text,
+    render_result,
+    render_transcript_message,
+)
 
+
+_LOG_HANDLER_NAME = "azure_architect_console"
 
 SAMPLE_REQUIREMENT = """\
 为一个中小型电商 API 设计 Azure 高可用架构：
@@ -89,6 +98,14 @@ def render_sidebar() -> dict[str, object]:
             horizontal=True,
         )
         save_trace_enabled = st.checkbox("保存脱敏的本地运行记录", value=False)
+        verbose_log = st.checkbox(
+            "输出详细诊断日志",
+            value=False,
+            help=(
+                "在运行终端打印每次结构校验失败的角色、轮次和原因，"
+                "便于排查模型输出问题。日志只记录长度和短摘要，不保存完整输出。"
+            ),
+        )
         st.divider()
         st.caption(
             "本地模型会占用约 3–5 GiB 内存。首次生成前才会加载。"
@@ -99,7 +116,32 @@ def render_sidebar() -> dict[str, object]:
         "max_tokens": max_tokens,
         "n_gpu_layers": -1 if backend == "Apple Metal" else 0,
         "save_trace": save_trace_enabled,
+        "verbose_log": verbose_log,
     }
+
+
+def configure_run_logging(*, verbose: bool) -> None:
+    """Send diagnostics to the launching terminal when the operator asks for it.
+
+    Handlers are replaced rather than appended so repeated Streamlit reruns do
+    not multiply the same record.
+    """
+
+    run_logger = logging.getLogger(LOGGER_NAME)
+    for handler in list(run_logger.handlers):
+        if getattr(handler, "name", None) == _LOG_HANDLER_NAME:
+            run_logger.removeHandler(handler)
+    if not verbose:
+        run_logger.setLevel(logging.CRITICAL)
+        return
+
+    handler = logging.StreamHandler()
+    handler.name = _LOG_HANDLER_NAME
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s | %(message)s")
+    )
+    run_logger.addHandler(handler)
+    run_logger.setLevel(logging.INFO)
 
 
 def run_architecture(
@@ -107,6 +149,7 @@ def run_architecture(
     settings: dict[str, object],
 ) -> ArchitectureRunResult:
     request = ArchitectureRequest(requirements=requirements)
+    configure_run_logging(verbose=bool(settings.get("verbose_log")))
     model_path = str(settings["model_path"]).strip()
     if not model_path:
         raise ConfigurationError("请先在侧边栏填写 Phi-3 GGUF 绝对路径。")
@@ -199,19 +242,18 @@ def main() -> None:
             result = run_architecture(requirements, settings)
             st.session_state.architecture_result = result.model_dump()
         except (ConfigurationError, ValueError) as exc:
-            st.error("无法开始本次运行。", icon="⚠️")
-            st.code(str(exc), language=None)
+            render_failure(exc, context="无法开始本次运行")
         except Exception as exc:
-            st.error("本地运行失败。", icon="⚠️")
-            st.code(f"{type(exc).__name__}: {exc}", language=None)
+            render_failure(exc, context="本地运行失败")
 
     stored = st.session_state.architecture_result
     if stored is not None:
         result = ArchitectureRunResult.model_validate(stored)
         if result.status is RunStatus.FAILED:
-            st.error("架构生成失败。")
             if result.error:
-                st.code(result.error, language=None)
+                render_failure_text(result.error, context="架构生成失败")
+            else:
+                st.error("架构生成失败。", icon="⚠️")
         render_result(result)
 
 

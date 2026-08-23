@@ -28,6 +28,9 @@ def fake_streamlit() -> SimpleNamespace:
         expander=Mock(return_value=nullcontext()),
         success=Mock(),
         warning=Mock(),
+        info=Mock(),
+        code=Mock(),
+        graphviz_chart=Mock(),
     )
 
 
