@@ -19,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 from .agents import create_architecture_agents
 from .output_parser import StructuredOutputError, parse_structured_output
 from .prompts import build_initial_plan_task, build_revision_task, build_review_task
+from .run_log import log_attempt_failure, log_run_failure
 from .schemas import (
     AgentRole,
     ArchitecturePlan,
@@ -182,6 +183,7 @@ class ArchitectureOrchestrator:
         agent: AssistantAgent,
         task: str,
         schema: type[SchemaT],
+        run_id: str,
         role: AgentRole,
         phase: MessagePhase,
         review_round: int,
@@ -231,6 +233,16 @@ class ArchitectureOrchestrator:
                     validate_revision_transition(previous_plan, parsed, prior_review)
             except StructuredOutputError as exc:
                 last_error = exc
+                log_attempt_failure(
+                    run_id=run_id,
+                    role=role.value,
+                    phase=phase.value,
+                    review_round=review_round,
+                    attempt=attempt + 1,
+                    max_attempts=self._max_parse_retries + 1,
+                    error=exc,
+                    raw_output=raw_content,
+                )
                 failed_message = TranscriptMessage(
                     sequence=len(transcript) + 1,
                     review_round=review_round,
@@ -308,6 +320,7 @@ class ArchitectureOrchestrator:
                 agent=agents.planner,
                 task=build_initial_plan_task(request.requirements),
                 schema=ArchitecturePlan,
+                run_id=run_id,
                 role=AgentRole.PLANNER,
                 phase=MessagePhase.INITIAL_PLAN,
                 review_round=0,
@@ -329,6 +342,7 @@ class ArchitectureOrchestrator:
                     agent=round_agents.reviewer,
                     task=build_review_task(request.requirements, plan),
                     schema=ArchitectureReview,
+                    run_id=run_id,
                     role=AgentRole.REVIEWER,
                     phase=MessagePhase.REVIEW,
                     review_round=review_round,
@@ -375,6 +389,7 @@ class ArchitectureOrchestrator:
                         agent=revision_agents.planner,
                         task=build_revision_task(request.requirements, plan, review),
                         schema=ArchitecturePlan,
+                        run_id=run_id,
                         role=AgentRole.PLANNER,
                         phase=MessagePhase.REVISION,
                         review_round=review_round,
@@ -409,6 +424,11 @@ class ArchitectureOrchestrator:
             )
             return result
         except Exception as exc:
+            log_run_failure(
+                run_id=run_id,
+                error=exc,
+                review_rounds_completed=rounds_completed,
+            )
             error = (
                 "Invalid architecture requirements"
                 if request is None and isinstance(exc, ValidationError)
