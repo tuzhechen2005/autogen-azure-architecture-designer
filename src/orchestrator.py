@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,7 +20,9 @@ from pydantic import BaseModel, ValidationError
 from .agents import create_architecture_agents
 from .output_parser import StructuredOutputError, parse_structured_output
 from .prompts import build_initial_plan_task, build_revision_task, build_review_task
+from .progress_guard import ProgressGuard, resolve_review_changes
 from .run_log import log_attempt_failure, log_run_failure
+from .topology_contract import TopologyContractError, validate_topology_policy
 from .schemas import (
     AgentRole,
     ArchitecturePlan,
@@ -200,6 +203,8 @@ class ArchitectureOrchestrator:
             if remaining_seconds <= 0:
                 raise TimeoutError("Architecture run exceeded its wall-clock timeout")
             cancellation_token = CancellationToken()
+            input_summary_sha256 = hashlib.sha256(next_task.encode()).hexdigest()
+            attempt_started = monotonic()
             try:
                 result = await asyncio.wait_for(
                     agent.run(
@@ -214,8 +219,22 @@ class ArchitectureOrchestrator:
                     "Architecture run exceeded its wall-clock timeout"
                 ) from exc
             raw_content = self._last_content(result)
+            duration_ms = (monotonic() - attempt_started) * 1000
+            result_messages = getattr(result, "messages", [])
+            last_result_message = result_messages[-1] if result_messages else None
+            usage = getattr(last_result_message, "models_usage", None)
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            raw_output_sha256 = hashlib.sha256(raw_content.encode()).hexdigest()
             try:
                 parsed = parse_structured_output(raw_content, schema)
+                if isinstance(parsed, ArchitecturePlan):
+                    try:
+                        validate_topology_policy(parsed)
+                    except TopologyContractError as exc:
+                        raise StructuredOutputError(
+                            f"topology policy failed: {exc}"
+                        ) from exc
                 if (
                     expected_revision is not None
                     and isinstance(parsed, ArchitecturePlan)
@@ -250,6 +269,12 @@ class ArchitectureOrchestrator:
                     phase=phase,
                     raw_content=raw_content,
                     parsed_content=None,
+                    input_summary_sha256=input_summary_sha256,
+                    raw_output_sha256=raw_output_sha256,
+                    duration_ms=duration_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    validation_status="invalid",
                     created_at=datetime.now(timezone.utc),
                 )
                 transcript.append(failed_message)
@@ -280,6 +305,12 @@ class ArchitectureOrchestrator:
                 phase=phase,
                 raw_content=raw_content,
                 parsed_content=parsed.model_dump(mode="json"),
+                input_summary_sha256=input_summary_sha256,
+                raw_output_sha256=raw_output_sha256,
+                duration_ms=duration_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                validation_status="valid",
                 created_at=datetime.now(timezone.utc),
             )
             transcript.append(message)
@@ -306,6 +337,7 @@ class ArchitectureOrchestrator:
         plan: ArchitecturePlan | None = None
         review: ArchitectureReview | None = None
         rounds_completed = 0
+        progress_guard = ProgressGuard()
 
         try:
             request = ArchitectureRequest(requirements=requirements)
@@ -328,6 +360,7 @@ class ArchitectureOrchestrator:
                 expected_revision=1,
                 run_deadline=run_deadline,
             )
+            progress_guard.observe_plan(plan)
 
             for review_round in range(1, self._max_review_rounds + 1):
                 self._emit(
@@ -350,6 +383,32 @@ class ArchitectureOrchestrator:
                     run_deadline=run_deadline,
                 )
                 rounds_completed = review_round
+
+                review_is_new = progress_guard.observe_review(review)
+                if (
+                    review.decision is ReviewDecision.REVISION_REQUIRED
+                    and not review_is_new
+                ):
+                    result = self._build_result(
+                        run_id=run_id,
+                        request=request,
+                        status=RunStatus.DEGRADED,
+                        termination_reason=TerminationReason.NO_PROGRESS,
+                        plan=plan,
+                        review=review,
+                        transcript=transcript,
+                        rounds_completed=rounds_completed,
+                        started_at=started_at,
+                    )
+                    self._emit(
+                        CollaborationEvent(
+                            event_type=EventType.COMPLETED,
+                            text="Repeated reviewer requirements detected; returning the latest validated plan.",
+                            review_round=rounds_completed,
+                            result=result,
+                        )
+                    )
+                    return result
 
                 if review.decision is ReviewDecision.APPROVED:
                     result = self._build_result(
@@ -399,11 +458,12 @@ class ArchitectureOrchestrator:
                         prior_review=review,
                         run_deadline=run_deadline,
                     )
+                    progress_guard.observe_plan(plan)
 
             result = self._build_result(
                 run_id=run_id,
                 request=request,
-                status=RunStatus.COMPLETED,
+                status=RunStatus.DEGRADED,
                 termination_reason=TerminationReason.MAX_REVIEW_ROUNDS,
                 plan=plan,
                 review=review,
@@ -418,6 +478,33 @@ class ArchitectureOrchestrator:
                         "Maximum review rounds reached; returning the latest "
                         "validated plan with unresolved findings."
                     ),
+                    review_round=rounds_completed,
+                    result=result,
+                )
+            )
+            return result
+        except TimeoutError as exc:
+            log_run_failure(
+                run_id=run_id,
+                error=exc,
+                review_rounds_completed=rounds_completed,
+            )
+            result = self._build_result(
+                run_id=run_id,
+                request=request,
+                status=RunStatus.TIMEOUT,
+                termination_reason=TerminationReason.TIMEOUT,
+                plan=plan,
+                review=review,
+                transcript=transcript,
+                rounds_completed=rounds_completed,
+                started_at=started_at,
+                error=f"TimeoutError: {exc}",
+            )
+            self._emit(
+                CollaborationEvent(
+                    event_type=EventType.ERROR,
+                    text=result.error or "Architecture run timed out.",
                     review_round=rounds_completed,
                     result=result,
                 )
@@ -477,6 +564,11 @@ class ArchitectureOrchestrator:
             termination_reason=termination_reason,
             final_plan=plan,
             final_review=review,
+            review_resolutions=(
+                resolve_review_changes(review, plan)
+                if review is not None and plan is not None
+                else []
+            ),
             messages=list(transcript),
             review_rounds_completed=rounds_completed,
             started_at=started_at,

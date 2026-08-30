@@ -10,7 +10,7 @@ from unittest.mock import patch
 from app import run_architecture
 from scripts.orchestrator_smoke_test import ScriptedModelClient
 from src.orchestrator import ArchitectureOrchestrator, CollaborationEvent
-from src.schemas import RunStatus
+from src.schemas import RunStatus, TerminationReason
 
 
 class CountingScriptedClient(ScriptedModelClient):
@@ -40,7 +40,8 @@ class EarlyInputValidationTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertEqual(result.status, RunStatus.TIMEOUT)
+        self.assertEqual(result.termination_reason, TerminationReason.TIMEOUT)
         self.assertIn("wall-clock timeout", result.error or "")
         self.assertLess(time.monotonic() - started, 0.5)
 

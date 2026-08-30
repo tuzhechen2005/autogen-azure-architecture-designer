@@ -62,6 +62,34 @@ def _redacted_record(result: ArchitectureRunResult) -> dict[str, object]:
     record = result.model_dump(mode="json")
     plan = record.get("final_plan")
     review = record.get("final_review")
+    spans: list[dict[str, object]] = []
+    for message in record.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        parsed = message.get("parsed_content")
+        spans.append(
+            {
+                "sequence": message.get("sequence"),
+                "review_round": message.get("review_round"),
+                "role": message.get("role"),
+                "phase": message.get("phase"),
+                "input_summary_sha256": message.get("input_summary_sha256"),
+                "raw_output_sha256": message.get("raw_output_sha256"),
+                "duration_ms": message.get("duration_ms"),
+                "prompt_tokens": message.get("prompt_tokens"),
+                "completion_tokens": message.get("completion_tokens"),
+                "validation_status": message.get("validation_status"),
+                "resource_count": (
+                    len(parsed.get("resources") or []) if isinstance(parsed, dict) else None
+                ),
+                "finding_count": (
+                    len(parsed.get("findings") or []) if isinstance(parsed, dict) else None
+                ),
+                "required_change_count": (
+                    len(parsed.get("required_changes") or []) if isinstance(parsed, dict) else None
+                ),
+            }
+        )
     return {
         "run_id": record.get("run_id"),
         "status": record.get("status"),
@@ -70,11 +98,13 @@ def _redacted_record(result: ArchitectureRunResult) -> dict[str, object]:
         "started_at": record.get("started_at"),
         "finished_at": record.get("finished_at"),
         "message_count": len(record.get("messages") or []),
+        "spans": spans,
         "plan_revision": plan.get("revision") if isinstance(plan, dict) else None,
         "review_decision": (
             review.get("decision") if isinstance(review, dict) else None
         ),
         "has_error": bool(record.get("error")),
+        "review_resolutions": record.get("review_resolutions") or [],
         "sensitive_content_included": False,
     }
 

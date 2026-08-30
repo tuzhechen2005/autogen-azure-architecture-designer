@@ -202,18 +202,37 @@ class TranscriptMessage(StrictModel):
     phase: MessagePhase
     raw_content: str = Field(min_length=1)
     parsed_content: dict[str, object] | None = None
+    input_summary_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    raw_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    duration_ms: float = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    validation_status: Literal["valid", "invalid"]
     created_at: datetime
 
 
 class RunStatus(str, Enum):
     COMPLETED = "completed"
+    DEGRADED = "degraded"
+    TIMEOUT = "timeout"
     FAILED = "failed"
 
 
 class TerminationReason(str, Enum):
     APPROVED = "approved"
     MAX_REVIEW_ROUNDS = "max_review_rounds"
+    NO_PROGRESS = "no_progress"
+    TIMEOUT = "timeout"
     ERROR = "error"
+
+
+class ReviewResolution(StrictModel):
+    """Machine-verifiable disposition for one reviewer-required change."""
+
+    required_change_index: int = Field(ge=0, le=2)
+    description: str = Field(min_length=5, max_length=600)
+    status: Literal["implemented", "unresolved"]
+    evidence_field: RevisionTargetField
 
 
 class ArchitectureRunResult(StrictModel):
@@ -225,6 +244,7 @@ class ArchitectureRunResult(StrictModel):
     termination_reason: TerminationReason
     final_plan: ArchitecturePlan | None = None
     final_review: ArchitectureReview | None = None
+    review_resolutions: list[ReviewResolution] = Field(default_factory=list)
     messages: list[TranscriptMessage] = Field(default_factory=list)
     review_rounds_completed: int = Field(ge=0, le=5)
     started_at: datetime
