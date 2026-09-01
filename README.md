@@ -170,6 +170,7 @@ python scripts/build_release.py
 │   ├── schemas.py                 Pydantic 数据契约
 │   ├── prompts.py                 规划/审查/修订提示词
 │   ├── output_parser.py           JSON 候选提取与校验
+│   ├── phase7_evidence.py          共享 trace、错误、安全与循环故障适配
 │   ├── agents.py                  两个独立 AutoGen 角色
 │   ├── orchestrator.py            多轮协作、事件与终止
 │   ├── trace_writer.py            私有、原子发布的逐 run JSON 记录
@@ -178,7 +179,7 @@ python scripts/build_release.py
 ├── examples/                      可复用需求示例
 ├── docs/                          需求、架构和工作日志
 ├── results/                       本地运行记录（默认忽略）
-└── tests/                         下一版本的完整测试位置
+└── tests/                         离线单元与集成测试
 ```
 
 ## 结构化容错边界

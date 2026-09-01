@@ -84,9 +84,7 @@ class ArchitecturePlan(StrictModel):
                     f"resource {resource.name} contains duplicate dependencies"
                 )
             if resource.name in dependencies:
-                raise ValueError(
-                    f"resource {resource.name} cannot depend on itself"
-                )
+                raise ValueError(f"resource {resource.name} cannot depend on itself")
             unknown = set(dependencies) - known_names
             if unknown:
                 raise ValueError(
@@ -178,7 +176,9 @@ class ArchitectureReview(StrictModel):
             self.decision is ReviewDecision.REVISION_REQUIRED
             and not self.required_changes
         ):
-            raise ValueError("revision_required reviews need at least one required change")
+            raise ValueError(
+                "revision_required reviews need at least one required change"
+            )
         return self
 
 
@@ -208,7 +208,18 @@ class TranscriptMessage(StrictModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     validation_status: Literal["valid", "invalid"]
+    validation_error_category: Literal["parse", "schema", "state"] | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validation_category_matches_status(self) -> "TranscriptMessage":
+        if self.validation_status == "valid" and self.validation_error_category:
+            raise ValueError(
+                "valid messages cannot contain a validation error category"
+            )
+        if self.validation_status == "invalid" and not self.validation_error_category:
+            raise ValueError("invalid messages require a validation error category")
+        return self
 
 
 class RunStatus(str, Enum):

@@ -58,7 +58,8 @@ def _revision_target_text(
         )
         if resource is None:
             raise StructuredOutputError(
-                f"revision constraint targets unknown resource: {resource_name}"
+                f"revision constraint targets unknown resource: {resource_name}",
+                category="state",
             )
         value = getattr(resource, field_name)
     else:
@@ -77,32 +78,36 @@ def validate_revision_transition(
 
     if revised.revision != previous.revision + 1:
         raise StructuredOutputError(
-            "schema validation failed: revision must increment by exactly one"
+            "schema validation failed: revision must increment by exactly one",
+            category="state",
         )
 
     previous_by_name = {resource.name: resource for resource in previous.resources}
     revised_by_name = {resource.name: resource for resource in revised.resources}
     if previous_by_name.keys() != revised_by_name.keys():
         raise StructuredOutputError(
-            "revision must preserve the resource names and resource count"
+            "revision must preserve the resource names and resource count",
+            category="state",
         )
 
     for name, previous_resource in previous_by_name.items():
         revised_resource = revised_by_name[name]
         if revised_resource.resource_type != previous_resource.resource_type:
             raise StructuredOutputError(
-                f"revision must preserve resource type for {name}"
+                f"revision must preserve resource type for {name}", category="state"
             )
         if set(revised_resource.depends_on) != set(previous_resource.depends_on):
             raise StructuredOutputError(
-                f"revision must preserve dependency relationships for {name}"
+                f"revision must preserve dependency relationships for {name}",
+                category="state",
             )
 
     if previous.model_dump(exclude={"revision"}) == revised.model_dump(
         exclude={"revision"}
     ):
         raise StructuredOutputError(
-            "revision must make a substantive change beyond its revision number"
+            "revision must make a substantive change beyond its revision number",
+            category="state",
         )
 
     for change in review.required_changes:
@@ -116,7 +121,8 @@ def validate_revision_transition(
         ]
         if missing_terms:
             raise StructuredOutputError(
-                f"revision did not satisfy required change: {change.description}"
+                f"revision did not satisfy required change: {change.description}",
+                category="state",
             )
 
 
@@ -233,7 +239,7 @@ class ArchitectureOrchestrator:
                         validate_topology_policy(parsed)
                     except TopologyContractError as exc:
                         raise StructuredOutputError(
-                            f"topology policy failed: {exc}"
+                            f"topology policy failed: {exc}", category="schema"
                         ) from exc
                 if (
                     expected_revision is not None
@@ -242,12 +248,14 @@ class ArchitectureOrchestrator:
                 ):
                     raise StructuredOutputError(
                         "schema validation failed: revision must equal "
-                        f"{expected_revision}, got {parsed.revision}"
+                        f"{expected_revision}, got {parsed.revision}",
+                        category="state",
                     )
                 if previous_plan is not None and prior_review is not None:
                     if not isinstance(parsed, ArchitecturePlan):
                         raise StructuredOutputError(
-                            "revision transition requires an architecture plan"
+                            "revision transition requires an architecture plan",
+                            category="state",
                         )
                     validate_revision_transition(previous_plan, parsed, prior_review)
             except StructuredOutputError as exc:
@@ -275,6 +283,7 @@ class ArchitectureOrchestrator:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     validation_status="invalid",
+                    validation_error_category=exc.category,
                     created_at=datetime.now(timezone.utc),
                 )
                 transcript.append(failed_message)
@@ -289,7 +298,8 @@ class ArchitectureOrchestrator:
                 if attempt >= self._max_parse_retries:
                     raise StructuredOutputError(
                         f"{role.value}/{phase.value} failed after "
-                        f"{attempt + 1} attempt(s): {exc}"
+                        f"{attempt + 1} attempt(s): {exc}",
+                        category=exc.category,
                     ) from exc
                 agent = self._fresh_agent(role)
                 next_task = (
