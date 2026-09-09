@@ -25,3 +25,9 @@ Reviewer 每条 required change 都生成 `implemented` 或 `unresolved` 处置�
 每轮消息记录 Agent 角色、阶段、轮次、输入摘要 SHA-256、原始输出 SHA-256、解析状态、耗时和 token 数。默认落盘 trace 不含完整需求或模型文本，只保留这些摘要、资源/问题/必改项数量、意见处置和终止原因。原始模型输出在正式评测中另存唯一 run 目录，不允许覆盖或修复。
 
 Phase 7 已在上述记录之上增加统一 trace、共享错误 taxonomy、状态规则 hash、循环故障契约和精确 canary 脱敏；详细 RED/GREEN 与验证证据见 `docs/phase7_task3_adoption.md`。
+
+## Phase 9 冻结终评入口
+
+- `python -m src.frozen_runner requirements --cases <冻结需求集> --expected-dataset-sha256 <hash> --model <gguf> --expected-model-sha256 <hash> --run-id <唯一 ID> --output-root <目录> --max-review-rounds 2`：用本地模型逐条运行有界 Planner/Reviewer 协作；每条的全部原始 agent 输出、校验状态和终态逐字追加到 `raw_predictions.jsonl`，完整 trace 以私有文件写入 `traces/`；run 目录独占创建。
+- `python -m src.frozen_runner score --cases <冻结需求集> --expected-dataset-sha256 <hash> --run-dir <目录>`：一对一评分并写 `evaluated_cases.jsonl`、`metrics.json`、`failures.jsonl`，已存在即拒绝。
+- `python -m src.frozen_runner faults --cases <冻结故障集> --expected-dataset-sha256 <hash> --run-id <唯一 ID> --output-root <目录>`：用确定性 fixture Planner/Reviewer 加单点故障注入执行 32 条故障用例，记录预期/实测终态、agent 调用数和是否在上限内终止。故障矩阵只证明编排器的终止边界，不代表模型质量；`repeated_plan` 与 `unresolved_review` 在当前编排器下以 `failed/error` 终止而非 `degraded`，结果如实记录，不改数据集预期。
