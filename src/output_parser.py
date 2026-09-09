@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TypeVar
+from typing import Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -12,8 +12,20 @@ from pydantic import BaseModel, ValidationError
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
+StructuredErrorCategory: TypeAlias = Literal["parse", "schema", "state"]
+
+
 class StructuredOutputError(ValueError):
-    """Raised when a model response cannot satisfy the requested schema."""
+    """Raised when a model response cannot satisfy the structured protocol."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: StructuredErrorCategory = "schema",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 _OUTER_FENCE = re.compile(
@@ -32,7 +44,9 @@ def _reject_duplicate_keys(
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise StructuredOutputError(f"duplicate JSON object key: {key}")
+            raise StructuredOutputError(
+                f"duplicate JSON object key: {key}", category="parse"
+            )
         result[key] = value
     return result
 
@@ -41,7 +55,7 @@ def extract_json_object(raw: str) -> dict[str, object]:
     """Decode exactly one complete top-level JSON object."""
 
     if not isinstance(raw, str) or not raw.strip():
-        raise StructuredOutputError("model output is empty")
+        raise StructuredOutputError("model output is empty", category="parse")
 
     text = _strip_outer_fence(raw)
     try:
@@ -50,11 +64,14 @@ def extract_json_object(raw: str) -> dict[str, object]:
         raise
     except json.JSONDecodeError as exc:
         raise StructuredOutputError(
-            f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+            f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+            category="parse",
         ) from exc
 
     if not isinstance(value, dict):
-        raise StructuredOutputError("top-level model output must be a JSON object")
+        raise StructuredOutputError(
+            "top-level model output must be a JSON object", category="parse"
+        )
     return value
 
 
@@ -70,7 +87,9 @@ def parse_structured_output(raw: str, schema: type[SchemaT]) -> SchemaT:
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
             for error in exc.errors(include_url=False)
         )
-        raise StructuredOutputError(f"schema validation failed: {details}") from exc
+        raise StructuredOutputError(
+            f"schema validation failed: {details}", category="schema"
+        ) from exc
 
 
 def compact_json(model: BaseModel) -> str:

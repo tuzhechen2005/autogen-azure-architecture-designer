@@ -84,7 +84,9 @@ class ModelLoadDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside:
             with tempfile.TemporaryDirectory() as root:
                 target = Path(outside) / "model.gguf"
-                target.write_bytes(b"GGUF" + b"\0" * (64 * 1024 * 1024))
+                with target.open("wb") as handle:
+                    handle.write(b"GGUF")
+                    handle.truncate(64 * 1024 * 1024 + 4)
                 with self.assertRaises(ConfigurationError) as ctx:
                     _config(model_path=target, model_root=Path(root)).validate()
                 self._assert_specific(ctx.exception)

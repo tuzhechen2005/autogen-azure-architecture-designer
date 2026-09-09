@@ -9,7 +9,14 @@ import re
 import secrets
 import stat
 import threading
+from uuid import uuid4
 
+from .phase7_evidence import (
+    PROMPT_VERSION,
+    build_shared_manifest_extension,
+    build_task3_trace_events,
+    redact_evidence,
+)
 from .schemas import ArchitectureRunResult
 
 
@@ -56,13 +63,80 @@ def _open_private_directory(output_directory: Path) -> tuple[int, Path]:
         raise
 
 
-def _redacted_record(result: ArchitectureRunResult) -> dict[str, object]:
+def _shared_fields(
+    result: ArchitectureRunResult,
+    *,
+    model_identity: str,
+) -> dict[str, object]:
+    trace_id = str(uuid4())
+    return {
+        "trace_id": trace_id,
+        "shared_contract": build_shared_manifest_extension(),
+        "shared_trace": build_task3_trace_events(
+            result,
+            trace_id=trace_id,
+            model=model_identity,
+            prompt_version=PROMPT_VERSION,
+        ),
+    }
+
+
+def _redacted_record(
+    result: ArchitectureRunResult,
+    *,
+    model_identity: str,
+) -> dict[str, object]:
     """Keep operational evidence without storing requirements or model text."""
 
     record = result.model_dump(mode="json")
     plan = record.get("final_plan")
     review = record.get("final_review")
-    return {
+    spans: list[dict[str, object]] = []
+    for message in record.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        parsed = message.get("parsed_content")
+        spans.append(
+            {
+                "sequence": message.get("sequence"),
+                "review_round": message.get("review_round"),
+                "role": message.get("role"),
+                "phase": message.get("phase"),
+                "input_summary_sha256": message.get("input_summary_sha256"),
+                "raw_output_sha256": message.get("raw_output_sha256"),
+                "duration_ms": message.get("duration_ms"),
+                "prompt_tokens": message.get("prompt_tokens"),
+                "completion_tokens": message.get("completion_tokens"),
+                "validation_status": message.get("validation_status"),
+                "validation_error_category": message.get("validation_error_category"),
+                "resource_count": (
+                    len(parsed.get("resources") or [])
+                    if isinstance(parsed, dict)
+                    else None
+                ),
+                "finding_count": (
+                    len(parsed.get("findings") or [])
+                    if isinstance(parsed, dict)
+                    else None
+                ),
+                "required_change_count": (
+                    len(parsed.get("required_changes") or [])
+                    if isinstance(parsed, dict)
+                    else None
+                ),
+            }
+        )
+    safe_resolutions = []
+    for resolution in record.get("review_resolutions") or []:
+        if isinstance(resolution, dict):
+            safe_resolutions.append(
+                {
+                    "required_change_index": resolution.get("required_change_index"),
+                    "status": resolution.get("status"),
+                    "evidence_field": resolution.get("evidence_field"),
+                }
+            )
+    redacted = {
         "run_id": record.get("run_id"),
         "status": record.get("status"),
         "termination_reason": record.get("termination_reason"),
@@ -70,13 +144,18 @@ def _redacted_record(result: ArchitectureRunResult) -> dict[str, object]:
         "started_at": record.get("started_at"),
         "finished_at": record.get("finished_at"),
         "message_count": len(record.get("messages") or []),
+        "spans": spans,
         "plan_revision": plan.get("revision") if isinstance(plan, dict) else None,
         "review_decision": (
             review.get("decision") if isinstance(review, dict) else None
         ),
         "has_error": bool(record.get("error")),
+        "review_resolutions": safe_resolutions,
         "sensitive_content_included": False,
     }
+    if isinstance(result, ArchitectureRunResult):
+        redacted.update(_shared_fields(result, model_identity=model_identity))
+    return redacted
 
 
 def save_trace(
@@ -84,19 +163,26 @@ def save_trace(
     output_directory: Path,
     *,
     include_sensitive_content: bool = False,
+    model_identity: str = "local-autogen-model",
 ) -> Path:
     """Atomically publish one private JSON file and return its absolute path."""
 
     run_id = result.run_id
     if _SAFE_RUN_ID.fullmatch(run_id) is None:
         raise ValueError("Run ID is unsafe for trace storage")
-    record = (
-        result.model_dump(mode="json")
-        if include_sensitive_content
-        else _redacted_record(result)
-    )
+    if not model_identity.strip():
+        raise ValueError("model_identity must be nonblank")
+    if include_sensitive_content:
+        record = result.model_dump(mode="json")
+        if isinstance(result, ArchitectureRunResult):
+            record.update(_shared_fields(result, model_identity=model_identity))
+    else:
+        record = _redacted_record(result, model_identity=model_identity)
     if include_sensitive_content:
         record["sensitive_content_included"] = True
+    record = redact_evidence(record)
+    if not isinstance(record, dict):
+        raise AssertionError("trace record must remain an object after redaction")
     serialized = json.dumps(
         record,
         ensure_ascii=False,

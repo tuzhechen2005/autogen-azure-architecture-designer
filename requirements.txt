@@ -10,5 +10,8 @@ streamlit==1.54.0
 pydantic==2.11.7
 pillow==12.3.0
 
+# Shared Phase 7 contract and canary registry validation.
+PyYAML==6.0.3
+
 # Offline regression test runner used by the acceptance workflow.
 pytest==9.0.3

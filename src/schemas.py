@@ -84,9 +84,7 @@ class ArchitecturePlan(StrictModel):
                     f"resource {resource.name} contains duplicate dependencies"
                 )
             if resource.name in dependencies:
-                raise ValueError(
-                    f"resource {resource.name} cannot depend on itself"
-                )
+                raise ValueError(f"resource {resource.name} cannot depend on itself")
             unknown = set(dependencies) - known_names
             if unknown:
                 raise ValueError(
@@ -178,7 +176,9 @@ class ArchitectureReview(StrictModel):
             self.decision is ReviewDecision.REVISION_REQUIRED
             and not self.required_changes
         ):
-            raise ValueError("revision_required reviews need at least one required change")
+            raise ValueError(
+                "revision_required reviews need at least one required change"
+            )
         return self
 
 
@@ -202,18 +202,48 @@ class TranscriptMessage(StrictModel):
     phase: MessagePhase
     raw_content: str = Field(min_length=1)
     parsed_content: dict[str, object] | None = None
+    input_summary_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    raw_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    duration_ms: float = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    validation_status: Literal["valid", "invalid"]
+    validation_error_category: Literal["parse", "schema", "state"] | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validation_category_matches_status(self) -> "TranscriptMessage":
+        if self.validation_status == "valid" and self.validation_error_category:
+            raise ValueError(
+                "valid messages cannot contain a validation error category"
+            )
+        if self.validation_status == "invalid" and not self.validation_error_category:
+            raise ValueError("invalid messages require a validation error category")
+        return self
 
 
 class RunStatus(str, Enum):
     COMPLETED = "completed"
+    DEGRADED = "degraded"
+    TIMEOUT = "timeout"
     FAILED = "failed"
 
 
 class TerminationReason(str, Enum):
     APPROVED = "approved"
     MAX_REVIEW_ROUNDS = "max_review_rounds"
+    NO_PROGRESS = "no_progress"
+    TIMEOUT = "timeout"
     ERROR = "error"
+
+
+class ReviewResolution(StrictModel):
+    """Machine-verifiable disposition for one reviewer-required change."""
+
+    required_change_index: int = Field(ge=0, le=2)
+    description: str = Field(min_length=5, max_length=600)
+    status: Literal["implemented", "unresolved"]
+    evidence_field: RevisionTargetField
 
 
 class ArchitectureRunResult(StrictModel):
@@ -225,6 +255,7 @@ class ArchitectureRunResult(StrictModel):
     termination_reason: TerminationReason
     final_plan: ArchitecturePlan | None = None
     final_review: ArchitectureReview | None = None
+    review_resolutions: list[ReviewResolution] = Field(default_factory=list)
     messages: list[TranscriptMessage] = Field(default_factory=list)
     review_rounds_completed: int = Field(ge=0, le=5)
     started_at: datetime

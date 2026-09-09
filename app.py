@@ -71,12 +71,9 @@ def load_local_model(
 
 def render_header() -> None:
     st.title("☁️ Azure Architecture Studio")
-    st.caption(
-        "Microsoft AutoGen · 本地 Phi-3 · 规划智能体 ↔ 审查智能体"
-    )
+    st.caption("Microsoft AutoGen · 本地 Phi-3 · 规划智能体 ↔ 审查智能体")
     st.info(
-        "本工具只生成架构建议：不连接 Azure 订阅，不执行部署，"
-        "不需要云端 API Key。",
+        "本工具只生成架构建议：不连接 Azure 订阅，不执行部署，不需要云端 API Key。",
         icon="🔒",
     )
 
@@ -107,9 +104,7 @@ def render_sidebar() -> dict[str, object]:
             ),
         )
         st.divider()
-        st.caption(
-            "本地模型会占用约 3–5 GiB 内存。首次生成前才会加载。"
-        )
+        st.caption("本地模型会占用约 3–5 GiB 内存。首次生成前才会加载。")
     return {
         "model_path": model_path,
         "max_rounds": max_rounds,
@@ -191,7 +186,11 @@ def run_architecture(
     result = asyncio.run(orchestrator.run(request.requirements))
     if bool(settings["save_trace"]):
         try:
-            save_trace(result, Path("results/architecture_runs"))
+            save_trace(
+                result,
+                Path("results/architecture_runs"),
+                model_identity=Path(model_path).name,
+            )
         except Exception:
             st.warning(
                 "方案已生成，但本地运行记录保存失败；当前方案仍可正常查看。",
